@@ -1,5 +1,22 @@
 const https = require("https");
 
+const CACHE = new Map();
+const CACHE_TTL = 30000;
+
+function cacheGet(key) {
+  const item = CACHE.get(key);
+  if (!item) return null;
+  if (Date.now() - item.time > CACHE_TTL) {
+    CACHE.delete(key);
+    return null;
+  }
+  return item.value;
+}
+
+function cacheSet(key, value) {
+  CACHE.set(key, { time: Date.now(), value });
+}
+
 function getText(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(
@@ -7,7 +24,7 @@ function getText(url) {
       {
         headers: {
           "User-Agent": "Mozilla/5.0",
-          "Referer": "https://quote.eastmoney.com/"
+          Referer: "https://quote.eastmoney.com/"
         },
         timeout: 12000
       },
@@ -27,6 +44,14 @@ function getText(url) {
   });
 }
 
+async function getJson(url) {
+  const cached = cacheGet(url);
+  if (cached) return cached;
+  const json = JSON.parse(await getText(url));
+  cacheSet(url, json);
+  return json;
+}
+
 function marketCode(code) {
   if (code.startsWith("6")) return "sh" + code;
   if (code.startsWith("0") || code.startsWith("3")) return "sz" + code;
@@ -39,12 +64,42 @@ function eastmoneySecid(code) {
   return "0." + code;
 }
 
+function fmtNum(n) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return null;
+  return Number(Number(n).toFixed(2));
+}
+
+async function getStockName(code, fallbackName) {
+  if (fallbackName && fallbackName !== code && !fallbackName.includes("�")) {
+    return fallbackName;
+  }
+
+  try {
+    const url =
+      "https://searchapi.eastmoney.com/api/suggest/get?input=" +
+      encodeURIComponent(code) +
+      "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
+
+    const json = await getJson(url);
+    const list =
+      json && json.QuotationCodeTable && json.QuotationCodeTable.Data
+        ? json.QuotationCodeTable.Data
+        : [];
+
+    const item = list.find(x => x.Code === code);
+    if (item && item.Name) return item.Name;
+  } catch (e) {}
+
+  return fallbackName || code;
+}
+
 async function searchStock(q) {
   const keyword = String(q || "").trim();
   if (!keyword) return null;
 
   if (/^\d{6}$/.test(keyword)) {
-    return { code: keyword, name: keyword };
+    const name = await getStockName(keyword, keyword);
+    return { code: keyword, name };
   }
 
   try {
@@ -53,7 +108,7 @@ async function searchStock(q) {
       encodeURIComponent(keyword) +
       "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
 
-    const json = JSON.parse(await getText(url));
+    const json = await getJson(url);
     const list =
       json && json.QuotationCodeTable && json.QuotationCodeTable.Data
         ? json.QuotationCodeTable.Data
@@ -71,28 +126,6 @@ async function searchStock(q) {
   } catch (e) {}
 
   return null;
-}
-
-async function getStockName(code, fallbackName) {
-  if (fallbackName && fallbackName !== code) return fallbackName;
-
-  try {
-    const url =
-      "https://searchapi.eastmoney.com/api/suggest/get?input=" +
-      encodeURIComponent(code) +
-      "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
-
-    const json = JSON.parse(await getText(url));
-    const list =
-      json && json.QuotationCodeTable && json.QuotationCodeTable.Data
-        ? json.QuotationCodeTable.Data
-        : [];
-
-    const item = list.find(x => x.Code === code);
-    if (item && item.Name) return item.Name;
-  } catch (e) {}
-
-  return fallbackName || code;
 }
 
 function parseQuote(text, stock) {
@@ -144,7 +177,7 @@ async function getKline(code, klt, limit) {
       "&fqt=1&end=20500101&lmt=" +
       limit;
 
-    const json = JSON.parse(await getText(url));
+    const json = await getJson(url);
     const rows = json && json.data && json.data.klines ? json.data.klines : [];
 
     return rows.map(line => {
@@ -168,6 +201,86 @@ async function getKline(code, klt, limit) {
   }
 }
 
+async function getMarketCandidates() {
+  const cacheKey = "rank_candidates_v8";
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const pages = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    const urls = pages.map(
+      page =>
+        "https://push2.eastmoney.com/api/qt/clist/get?pn=" +
+        page +
+        "&pz=500&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f6,f8"
+    );
+
+    const results = await Promise.allSettled(urls.map(url => getJson(url)));
+    const all = [];
+
+    for (const r of results) {
+      if (r.status !== "fulfilled") continue;
+      const list =
+        r.value && r.value.data && r.value.data.diff ? r.value.data.diff : [];
+
+      for (const x of list) {
+        all.push({
+          code: String(x.f12 || ""),
+          name: String(x.f14 || ""),
+          price: Number(x.f2 || 0),
+          pct: Number(x.f3 || 0),
+          amount: Number(x.f6 || 0),
+          turnover: Number(x.f8 || 0)
+        });
+      }
+    }
+
+    const candidates = all
+      .filter(x => {
+        if (!x.code || !/^\d{6}$/.test(x.code)) return false;
+        if (!x.name) return false;
+        if (x.name.includes("ST") || x.name.includes("*ST") || x.name.includes("退")) return false;
+        if (!x.price || x.price <= 2) return false;
+        if (!x.amount || x.amount < 80000000) return false;
+        if (x.pct < -4) return false;
+        if (x.turnover && x.turnover < 1) return false;
+        return true;
+      })
+      .map(x => {
+        let fastScore = 0;
+
+        if (x.amount > 1000000000) fastScore += 25;
+        else if (x.amount > 500000000) fastScore += 18;
+        else if (x.amount > 200000000) fastScore += 12;
+
+        if (x.pct > 0 && x.pct < 7) fastScore += 20;
+        else if (x.pct >= 7 && x.pct < 9.8) fastScore += 12;
+        else if (x.pct < 0) fastScore -= 10;
+
+        if (x.turnover >= 3 && x.turnover <= 15) fastScore += 20;
+        else if (x.turnover > 15) fastScore += 5;
+
+        return { ...x, fastScore };
+      })
+      .sort((a, b) => {
+        const scoreA = a.fastScore + Math.log10(a.amount || 1) * 3;
+        const scoreB = b.fastScore + Math.log10(b.amount || 1) * 3;
+        return scoreB - scoreA;
+      })
+      .slice(0, 30);
+
+    cacheSet(cacheKey, candidates);
+    return candidates;
+  } catch (e) {
+    return [
+      { code: "300750", name: "宁德时代" },
+      { code: "600519", name: "贵州茅台" },
+      { code: "002594", name: "比亚迪" }
+    ];
+  }
+}
+
 async function getFinance(code) {
   try {
     const url =
@@ -175,7 +288,7 @@ async function getFinance(code) {
       code +
       '")';
 
-    const json = JSON.parse(await getText(url));
+    const json = await getJson(url);
     const row =
       json && json.result && json.result.data && json.result.data.length
         ? json.result.data[0]
@@ -341,21 +454,18 @@ function calcSupportResistance(price, dayK, ma5, ma10, ma20, ma30, ma60) {
     .filter(x => x && x > price)
     .sort((a, b) => a - b);
 
-  const support = supports.length ? Number(supports[0].toFixed(2)) : null;
-  const strongSupport = supports.length > 1 ? Number(supports[supports.length - 1].toFixed(2)) : support;
-
-  const pressure = pressures.length ? Number(pressures[0].toFixed(2)) : null;
-  const strongPressure = pressures.length > 1 ? Number(pressures[pressures.length - 1].toFixed(2)) : pressure;
+  const support = supports.length ? fmtNum(supports[0]) : null;
+  const pressure = pressures.length ? fmtNum(pressures[0]) : null;
 
   return {
     support,
-    strongSupport,
+    strongSupport: supports.length > 1 ? fmtNum(supports[supports.length - 1]) : support,
     pressure,
-    strongPressure,
-    high20: h20 ? Number(h20.toFixed(2)) : null,
-    high60: h60 ? Number(h60.toFixed(2)) : null,
-    low20: l20 ? Number(l20.toFixed(2)) : null,
-    low60: l60 ? Number(l60.toFixed(2)) : null
+    strongPressure: pressures.length > 1 ? fmtNum(pressures[pressures.length - 1]) : pressure,
+    high20: h20 ? fmtNum(h20) : null,
+    high60: h60 ? fmtNum(h60) : null,
+    low20: l20 ? fmtNum(l20) : null,
+    low60: l60 ? fmtNum(l60) : null
   };
 }
 
@@ -370,7 +480,6 @@ function makeStrategy(basic, dayK, finance) {
   const ma30 = sma(closes, 30);
   const ma60 = sma(closes, 60);
   const avgAmount5 = sma(amounts, 5);
-  const avgAmount20 = sma(amounts, 20);
   const macd = calcMacd(closes);
   const sr = calcSupportResistance(price, dayK, ma5, ma10, ma20, ma30, ma60);
 
@@ -393,14 +502,6 @@ function makeStrategy(basic, dayK, finance) {
     riskScore += 15;
     risk.push("跌破5日线，短线转弱");
     sell.push("跌破5日线，短线需要减仓防守");
-  }
-
-  if (ma10 && price > ma10) {
-    trendScore += 8;
-    pos.push("站上10日线，短线趋势保持");
-  } else if (ma10) {
-    riskScore += 8;
-    risk.push("跌破10日线，短线动能减弱");
   }
 
   if (ma20 && price > ma20) {
@@ -438,6 +539,7 @@ function makeStrategy(basic, dayK, finance) {
   let ma5Distance = null;
   if (ma5) {
     ma5Distance = Number((((price - ma5) / ma5) * 100).toFixed(2));
+
     if (ma5Distance > 10) {
       riskScore += 25;
       risk.push("偏离5日线超过10%，短线追高风险较大");
@@ -466,9 +568,6 @@ function makeStrategy(basic, dayK, finance) {
     riskScore += 25;
     volumeSignal = "放量下跌，抛压较重";
     sell.push("放量下跌，优先控制风险");
-  } else if (avgAmount5 && basic.amount < avgAmount5 * 0.65) {
-    riskScore += 8;
-    volumeSignal = "缩量，资金参与度下降";
   }
 
   if (macd.signal.includes("金叉")) {
@@ -498,15 +597,6 @@ function makeStrategy(basic, dayK, finance) {
   if (sr.low20 && price <= sr.low20 * 1.03) {
     riskScore += 10;
     risk.push("接近20日低位，趋势仍需修复");
-  }
-
-  if (basic.high && basic.low && basic.open && basic.price) {
-    const range = basic.high - basic.low;
-    const upperShadow = basic.high - Math.max(basic.open, basic.price);
-    if (range > 0 && upperShadow / range > 0.45 && basic.pct > 0) {
-      riskScore += 15;
-      sell.push("上影线较长，高位抛压需要注意");
-    }
   }
 
   if (finance && finance.available) {
@@ -545,44 +635,17 @@ function makeStrategy(basic, dayK, finance) {
 
   let level = "没机会";
   let levelClass = "neutral";
-  let positionAdvice = "0%—15%，观察为主";
-  let actionAdvice = "暂时观察，等待重新放量或站上关键均线。";
-  let addPositionAdvice = "暂不适合加仓";
-  let reducePositionAdvice = "暂不需要主动减仓";
-
-  const isBreakMA5 = !!(ma5 && price < ma5);
-  const isBreakMA20 = !!(ma20 && price < ma20);
-  const isBreakMA30 = !!(ma30 && price < ma30);
-  const isBreakMA60 = !!(ma60 && price < ma60);
-  const isBroken = isBreakMA20 || isBreakMA30 || isBreakMA60;
 
   if (riskScore >= 65) {
     level = "风险大";
     levelClass = "danger";
-    positionAdvice = "0%—10%，已有仓位优先减仓或止损";
-    actionAdvice = "风险偏高，不建议新开仓；已有仓位以5日线、20日线为防守，破位严格减仓。";
-    reducePositionAdvice = "适合减仓或严格防守";
   } else if (opportunityScore >= 80 && trendScore >= 60 && riskScore <= 35) {
     level = "大机会";
     levelClass = "great";
-    positionAdvice = "40%—70%，只适合分歧低吸或确认后持有，不建议无脑满仓";
-    actionAdvice = "趋势、量能、动能或基本面共振较强；已有仓位可持有，无仓不要追高，等回踩5日线或分歧转一致。";
-    addPositionAdvice = "可在回踩不破5日线或突破压力位后分批加仓";
   } else if (opportunityScore >= 55 && trendScore >= 40 && riskScore <= 55) {
     level = "有机会";
     levelClass = "chance";
-    positionAdvice = "20%—40%，适合小仓试错";
-    actionAdvice = "有一定机会，可小仓试错；跌破5日线先减仓，跌破20日线退出观察。";
-    addPositionAdvice = "只能小仓试错，不适合重仓";
   }
-
-  if (basic.pct >= 9 && ma5Distance !== null && ma5Distance > 6) {
-    actionAdvice = "强势但短线偏离较大，不建议追高；已有仓位用5日线防守，炸板或放量滞涨先减仓。";
-    positionAdvice = "已有仓位持有观察；无仓谨慎，等待分歧低吸";
-  }
-
-  const stopLoss = ma20 || ma30 || ma5 || sr.support || null;
-  const defenseLine = ma5 || ma20 || sr.support || null;
 
   return {
     ma5,
@@ -591,10 +654,6 @@ function makeStrategy(basic, dayK, finance) {
     ma30,
     ma60,
     ma5Distance,
-    avgAmount5,
-    avgAmount20,
-    volumeSignal,
-    macd,
 
     support: sr.support,
     strongSupport: sr.strongSupport,
@@ -605,23 +664,22 @@ function makeStrategy(basic, dayK, finance) {
     low20: sr.low20,
     low60: sr.low60,
 
-    isBreakMA5,
-    isBreakMA20,
-    isBreakMA30,
-    isBreakMA60,
-    isBroken,
+    volumeSignal,
+    macd,
 
-    trendScore: Math.max(0, Math.min(100, trendScore)),
-    volumeScore: Math.max(-20, Math.min(100, volumeScore)),
-    macdScore: Math.max(-20, Math.min(100, macdScore)),
-    klineScore: Math.max(0, Math.min(100, klineScore)),
-    financeScore: Math.max(-20, Math.min(100, financeScore)),
-    chanceScore: opportunityScore,
+    trendScore,
+    volumeScore,
+    macdScore,
+    klineScore,
+    financeScore,
+
     opportunityScore,
+    chanceScore: opportunityScore,
     riskScore,
 
     level,
     levelClass,
+
     shortPressure: riskScore >= 60 ? "高" : riskScore >= 35 ? "中" : "低",
 
     positionText: pos.join("；") || "均线位置暂无明显优势",
@@ -629,13 +687,26 @@ function makeStrategy(basic, dayK, finance) {
     buyPoint: buy.join("；") || "暂未出现高质量买点",
     sellPoint: sell.join("；") || "暂未出现强卖出信号",
 
-    actionAdvice,
-    positionAdvice,
-    addPositionAdvice,
-    reducePositionAdvice,
+    stopLoss: ma20 || ma30 || ma5 || sr.support || null,
+    defenseLine: ma5 || ma20 || sr.support || null,
 
-    stopLoss: stopLoss ? Number(stopLoss.toFixed(2)) : null,
-    defenseLine: defenseLine ? Number(defenseLine.toFixed(2)) : null
+    positionAdvice:
+      level === "大机会"
+        ? "40%—70%，只适合分歧低吸或确认后持有"
+        : level === "有机会"
+        ? "20%—40%，小仓试错"
+        : level === "风险大"
+        ? "0%—10%，已有仓位优先减仓或止损"
+        : "0%—15%，观察为主",
+
+    actionAdvice:
+      level === "风险大"
+        ? "风险偏高，不建议新开仓；破位严格减仓。"
+        : level === "大机会"
+        ? "趋势、量能、动能共振较强；无仓不要追高，等分歧低吸。"
+        : level === "有机会"
+        ? "有一定机会，可小仓试错；跌破5日线先减仓。"
+        : "暂时观察，等待重新放量或站上关键均线。"
   };
 }
 
@@ -643,18 +714,23 @@ async function getStock(stock) {
   const realName = await getStockName(stock.code, stock.name);
   stock.name = realName;
 
-  const quoteText = await getText("https://qt.gtimg.cn/q=" + marketCode(stock.code));
+  const quoteText = await getText(
+    "https://qt.gtimg.cn/q=" + marketCode(stock.code)
+  );
+
   const basic = parseQuote(quoteText, stock);
 
   if (!basic || !basic.price) return null;
 
   basic.name = realName;
-const [dayK, weekK, monthK, finance] = await Promise.all([
-  getKline(stock.code, 101, 120),
-  getKline(stock.code, 102, 80),
-  getKline(stock.code, 103, 60),
-  getFinance(stock.code)
-]);
+
+  const [dayK, weekK, monthK, finance] = await Promise.all([
+    getKline(stock.code, 101, 120),
+    getKline(stock.code, 102, 80),
+    getKline(stock.code, 103, 60),
+    getFinance(stock.code)
+  ]);
+
   const strategy = makeStrategy(basic, dayK, finance);
 
   return {
@@ -673,8 +749,54 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   const q = String(req.query.q || "").trim();
+  const rank = String(req.query.rank || "").trim();
 
   try {
+    if (rank === "1") {
+      const candidates = await getMarketCandidates();
+      const deepList = candidates.slice(0, 18);
+
+      const result = await Promise.allSettled(
+        deepList.map(stock => getStock(stock))
+      );
+
+      const ranked = result
+        .filter(x => x.status === "fulfilled" && x.value)
+        .map(x => x.value);
+
+      ranked.sort((a, b) => {
+        const scoreA =
+          (a.opportunityScore || 0) -
+          (a.riskScore || 0) * 0.65 +
+          (a.volumeScore || 0) * 0.2 +
+          (a.klineScore || 0) * 0.2;
+
+        const scoreB =
+          (b.opportunityScore || 0) -
+          (b.riskScore || 0) * 0.65 +
+          (b.volumeScore || 0) * 0.2 +
+          (b.klineScore || 0) * 0.2;
+
+        return scoreB - scoreA;
+      });
+
+      return res.status(200).json({
+        success: true,
+        mode: "rank",
+        title: "全市场每日机会榜",
+        updateTime: new Date().toLocaleString("zh-CN", {
+          timeZone: "Asia/Shanghai"
+        }),
+        scanInfo: {
+          market: "A股全市场初筛",
+          candidateCount: candidates.length,
+          deepAnalyzeCount: deepList.length,
+          finalCount: Math.min(10, ranked.length)
+        },
+        data: ranked.slice(0, 10)
+      });
+    }
+
     let targets = [];
 
     if (q) {
@@ -693,8 +815,11 @@ module.exports = async function handler(req, res) {
       targets = [found];
     } else {
       targets = [
-    { code: "300750", name: "宁德时代" }
-];
+        {
+          code: "300750",
+          name: "宁德时代"
+        }
+      ];
     }
 
     const data = [];
@@ -714,7 +839,7 @@ module.exports = async function handler(req, res) {
   } catch (e) {
     return res.status(500).json({
       success: false,
-      message: "行情源暂时不可用，请稍后重试",
+      message: "行情源暂时不可用",
       error: String(e)
     });
   }
