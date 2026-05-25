@@ -1,5 +1,18 @@
 const https = require("https");
 
+const STOCKS = [
+  { code: "300750", name: "宁德时代" },
+  { code: "600519", name: "贵州茅台" },
+  { code: "002594", name: "比亚迪" },
+  { code: "000858", name: "五粮液" },
+  { code: "601318", name: "中国平安" },
+  { code: "000001", name: "平安银行" },
+  { code: "000333", name: "美的集团" },
+  { code: "300059", name: "东方财富" },
+  { code: "601899", name: "紫金矿业" },
+  { code: "300760", name: "迈瑞医疗" }
+];
+
 function marketCode(code) {
   if (code.startsWith("6")) return "sh" + code;
   if (code.startsWith("0") || code.startsWith("3")) return "sz" + code;
@@ -10,9 +23,7 @@ function marketCode(code) {
 function getText(url) {
   return new Promise((resolve, reject) => {
     https.get(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      },
+      headers: { "User-Agent": "Mozilla/5.0" },
       timeout: 8000
     }, res => {
       let data = "";
@@ -22,14 +33,19 @@ function getText(url) {
   });
 }
 
-function parseTencent(text, rawCode) {
+function findStock(q) {
+  if (!q) return null;
+  return STOCKS.find(s => s.code === q || s.name.includes(q) || q.includes(s.name));
+}
+
+function parseTencent(text, stock) {
   const match = text.match(/="([^"]+)"/);
   if (!match) return null;
 
   const arr = match[1].split("~");
 
-  const name = arr[1] || rawCode;
-  const code = arr[2] || rawCode;
+  const code = stock.code;
+  const name = stock.name;
   const price = Number(arr[3] || 0);
   const preClose = Number(arr[4] || 0);
   const open = Number(arr[5] || 0);
@@ -82,32 +98,42 @@ module.exports = async function handler(req, res) {
 
   const q = (req.query.q || "").trim();
 
-  const codes = q
-    ? [q]
-    : ["300750", "600519", "002594", "000858", "601318", "000001"];
-
   try {
+    let targets = [];
+
+    if (q) {
+      const stock = findStock(q);
+      if (!stock) {
+        return res.status(200).json({
+          success: true,
+          updateTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
+          data: []
+        });
+      }
+      targets = [stock];
+    } else {
+      targets = STOCKS.slice(0, 10);
+    }
+
     const results = [];
 
-    for (const code of codes) {
-      const realCode = marketCode(code);
+    for (const stock of targets) {
+      const realCode = marketCode(stock.code);
       const url = "https://qt.gtimg.cn/q=" + realCode;
       const text = await getText(url);
-      const item = parseTencent(text, code);
+      const item = parseTencent(text, stock);
       if (item && item.price) results.push(item);
     }
 
     return res.status(200).json({
       success: true,
-      updateTime: new Date().toLocaleString("zh-CN", {
-        timeZone: "Asia/Shanghai"
-      }),
+      updateTime: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }),
       data: results
     });
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: "腾讯行情接口失败",
+      message: "行情接口失败",
       error: String(error)
     });
   }
