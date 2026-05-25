@@ -1,4 +1,3 @@
-
 const https = require("https");
 
 function getText(url) {
@@ -10,7 +9,7 @@ function getText(url) {
           "User-Agent": "Mozilla/5.0",
           "Referer": "https://quote.eastmoney.com/"
         },
-        timeout: 10000
+        timeout: 12000
       },
       res => {
         let data = "";
@@ -43,9 +42,7 @@ function eastMoneySecid(code) {
 }
 
 async function searchCodeByName(keyword) {
-  if (/^\d{6}$/.test(keyword)) {
-    return { code: keyword, name: keyword };
-  }
+  if (/^\d{6}$/.test(keyword)) return { code: keyword, name: keyword };
 
   const url =
     "https://searchapi.eastmoney.com/api/suggest/get?input=" +
@@ -63,9 +60,7 @@ async function searchCodeByName(keyword) {
       : [];
 
   const item =
-    list.find(x => {
-      return x.Code && x.Name && /^\d{6}$/.test(x.Code);
-    }) || list[0];
+    list.find(x => x.Code && x.Name && /^\d{6}$/.test(x.Code)) || list[0];
 
   if (!item) return null;
 
@@ -102,7 +97,7 @@ function calcMacd(closes) {
       dif: null,
       dea: null,
       macd: null,
-      signal: "历史数据不足，暂不判断"
+      signal: "历史数据不足"
     };
   }
 
@@ -119,10 +114,11 @@ function calcMacd(closes) {
 
   let signal = "MACD 中性";
   if (dif > dea && macd > 0 && macd > prevMacd) signal = "MACD 金叉偏强，红柱放大";
-  else if (dif > dea && macd > 0 && macd < prevMacd) signal = "MACD 多头但红柱缩短，动能减弱";
-  else if (dif < dea && macd < 0) signal = "MACD 死叉偏弱";
+  else if (dif > dea && macd > 0 && macd < prevMacd) signal = "MACD 多头但红柱缩短，注意动能减弱";
+  else if (dif < dea && macd < 0 && macd < prevMacd) signal = "MACD 死叉偏弱，绿柱放大";
+  else if (dif < dea && macd < 0) signal = "MACD 空头压制";
   else if (dif > dea) signal = "MACD 多头修复中";
-  else if (dif < dea) signal = "MACD 空头压制中";
+  else if (dif < dea) signal = "MACD 偏弱修复中";
 
   return {
     dif: Number(dif.toFixed(3)),
@@ -132,20 +128,26 @@ function calcMacd(closes) {
   };
 }
 
-async function getKline(code) {
+async function getKline(code, type) {
   const secid = eastMoneySecid(code);
+  const kltMap = {
+    day: 101,
+    week: 102,
+    month: 103
+  };
+
   const url =
     "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=" +
     secid +
-    "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=120";
+    "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=" +
+    kltMap[type] +
+    "&fqt=1&end=20500101&lmt=160";
 
   const text = await getText(url);
   const json = JSON.parse(text);
 
   const klines =
-    json &&
-    json.data &&
-    json.data.klines
+    json && json.data && json.data.klines
       ? json.data.klines
       : [];
 
@@ -163,7 +165,7 @@ async function getKline(code) {
   });
 }
 
-function calcPosition(stock, klines) {
+function calcCore(stock, klines) {
   const closes = klines.map(x => x.close).filter(x => x > 0);
   const amounts = klines.map(x => x.amount).filter(x => x > 0);
 
@@ -179,28 +181,37 @@ function calcPosition(stock, klines) {
 
   let trendScore = 0;
   let riskScore = 0;
+  let chanceScore = 0;
+
   const positionReasons = [];
   const riskReasons = [];
+  const buyReasons = [];
+  const sellReasons = [];
 
   if (ma5 && price > ma5) {
     trendScore += 15;
+    chanceScore += 10;
     positionReasons.push("站上5日线，短线偏强");
   } else if (ma5) {
     riskScore += 15;
+    sellReasons.push("跌破5日线，短线需要减仓防守");
     riskReasons.push("跌破5日线，短线转弱");
   }
 
   if (ma20 && price > ma20) {
     trendScore += 20;
+    chanceScore += 15;
     positionReasons.push("站上20日线，中短趋势较好");
   } else if (ma20) {
-    riskScore += 20;
+    riskScore += 25;
+    sellReasons.push("跌破20日线，趋势防守位失守");
     riskReasons.push("跌破20日线，趋势防守位失守");
   }
 
   if (ma30 && price > ma30) {
     trendScore += 15;
-    positionReasons.push("站上30日线，趋势未破坏");
+    chanceScore += 10;
+    positionReasons.push("站上30日线，趋势结构未破坏");
   } else if (ma30) {
     riskScore += 15;
     riskReasons.push("跌破30日线，趋势偏弱");
@@ -208,9 +219,11 @@ function calcPosition(stock, klines) {
 
   if (ma60 && price > ma60) {
     trendScore += 15;
-    positionReasons.push("站上季度线，波段趋势较强");
+    chanceScore += 10;
+    positionReasons.push("站上季度线，波段结构较强");
   } else if (ma60) {
-    riskScore += 15;
+    riskScore += 20;
+    sellReasons.push("跌破季度线，波段趋势偏弱");
     riskReasons.push("跌破季度线，波段偏弱");
   }
 
@@ -220,44 +233,80 @@ function calcPosition(stock, klines) {
     if (ma5Distance > 8) {
       riskScore += 20;
       riskReasons.push("偏离5日线过大，追高风险上升");
-    }
-    if (ma5Distance < -3) {
-      riskScore += 10;
-      riskReasons.push("明显低于5日线，短线承压");
+      sellReasons.push("偏离5日线过大，不适合追高");
+    } else if (ma5Distance >= -1 && ma5Distance <= 3 && price > ma20) {
+      chanceScore += 15;
+      buyReasons.push("靠近5日线且仍在20日线上方，适合观察分歧低吸");
     }
   }
 
   let volumeSignal = "量能中性";
-  if (avgAmount5 && latestAmount > avgAmount5 * 1.5) {
+  if (avgAmount5 && latestAmount > avgAmount5 * 1.6 && stock.pct > 0) {
     trendScore += 15;
-    volumeSignal = "明显放量，资金活跃";
+    chanceScore += 15;
+    volumeSignal = "明显放量上涨，资金活跃";
+    buyReasons.push("放量上涨，资金关注度提高");
+  } else if (avgAmount5 && latestAmount > avgAmount5 * 1.6 && stock.pct < 0) {
+    riskScore += 25;
+    volumeSignal = "放量下跌，抛压较重";
+    sellReasons.push("放量下跌，优先控制风险");
   } else if (avgAmount5 && latestAmount < avgAmount5 * 0.7) {
-    riskScore += 10;
+    riskScore += 8;
     volumeSignal = "缩量，资金参与度下降";
   }
 
   const macd = calcMacd(closes);
-  if (macd.signal.includes("金叉") || macd.signal.includes("多头")) trendScore += 15;
-  if (macd.signal.includes("死叉") || macd.signal.includes("空头")) riskScore += 15;
 
-  let shortPressure = "低";
-  if (riskScore >= 45) shortPressure = "高";
-  else if (riskScore >= 25) shortPressure = "中";
+  if (macd.signal.includes("金叉") || macd.signal.includes("多头")) {
+    trendScore += 15;
+    chanceScore += 15;
+    buyReasons.push(macd.signal);
+  }
 
-  let actionAdvice = "观察为主";
-  if (trendScore >= 80 && riskScore <= 25) {
-    actionAdvice = "趋势较强，可持有；无仓不追高，等分歧低吸";
-  } else if (trendScore >= 60 && riskScore <= 35) {
-    actionAdvice = "可小仓试错或持有，跌破5日线减仓";
-  } else if (riskScore >= 55) {
-    actionAdvice = "风险偏高，建议减仓或等待重新站回均线";
-  } else if (ma20 && price < ma20) {
-    actionAdvice = "20日线下方，不宜重仓，先等趋势修复";
+  if (macd.signal.includes("死叉") || macd.signal.includes("空头")) {
+    riskScore += 18;
+    sellReasons.push(macd.signal);
+  }
+
+  if (stock.pct >= 9) {
+    chanceScore += 10;
+    trendScore += 10;
+    buyReasons.push("涨停或接近涨停，短线辨识度提升");
+  }
+
+  let level = "没机会";
+  let levelClass = "neutral";
+  let positionAdvice = "0%—15%，观察为主";
+  let actionAdvice = "暂时观察，等待重新放量或站上关键均线。";
+
+  if (riskScore >= 65) {
+    level = "风险大";
+    levelClass = "danger";
+    positionAdvice = "0%—10%，已有仓位优先减仓或止损";
+    actionAdvice = "风险偏高，不建议新开仓；已有仓位以5日线、20日线为防守，破位严格减仓。";
+  } else if (chanceScore >= 80 && trendScore >= 75 && riskScore <= 40) {
+    level = "大机会";
+    levelClass = "great";
+    positionAdvice = "40%—70%，只适合分歧低吸或确认后持有，不建议无脑满仓";
+    actionAdvice = "趋势和动能较强，已有仓位可持有；无仓不要追高，等回踩5日线或分歧转一致。";
+  } else if (chanceScore >= 55 && trendScore >= 50 && riskScore <= 55) {
+    level = "有机会";
+    levelClass = "chance";
+    positionAdvice = "20%—40%，适合小仓试错";
+    actionAdvice = "有一定机会，可小仓试错；跌破5日线先减仓，跌破20日线退出观察。";
   }
 
   if (stock.pct >= 9 && ma5Distance !== null && ma5Distance > 6) {
-    actionAdvice = "涨停或接近涨停且偏离较大，不建议追高；已有仓位看5日线防守";
+    actionAdvice = "强势但短线偏离较大，不建议追高；已有仓位用5日线防守，炸板或放量滞涨先减仓。";
+    positionAdvice = "已有仓位持有观察；无仓谨慎，等待分歧低吸";
   }
+
+  let shortPressure = "低";
+  if (riskScore >= 60) shortPressure = "高";
+  else if (riskScore >= 35) shortPressure = "中";
+
+  const stopLoss = ma20 || ma30 || ma5 || null;
+  const defenseLine = ma5 || ma20 || null;
 
   return {
     ma5,
@@ -270,10 +319,18 @@ function calcPosition(stock, klines) {
     macd,
     trendScore,
     riskScore,
+    chanceScore,
+    level,
+    levelClass,
     shortPressure,
     positionText: positionReasons.join("；") || "均线位置暂无明显优势",
     riskText: riskReasons.join("；") || "暂未出现明显破位风险",
-    actionAdvice
+    buyPoint: buyReasons.join("；") || "暂未出现高质量买点",
+    sellPoint: sellReasons.join("；") || "暂未出现强卖出信号",
+    actionAdvice,
+    positionAdvice,
+    stopLoss: stopLoss ? Number(stopLoss.toFixed(2)) : null,
+    defenseLine: defenseLine ? Number(defenseLine.toFixed(2)) : null
   };
 }
 
@@ -309,6 +366,20 @@ function parseTencent(text, stock) {
   };
 }
 
+function enrichKline(klines) {
+  const closes = klines.map(x => x.close);
+  return klines.map((x, i) => {
+    const sub = closes.slice(0, i + 1);
+    return {
+      ...x,
+      ma5: sma(sub, 5),
+      ma20: sma(sub, 20),
+      ma30: sma(sub, 30),
+      ma60: sma(sub, 60)
+    };
+  });
+}
+
 async function getStock(stock) {
   const realCode = marketCode(stock.code);
   const url = "https://qt.gtimg.cn/q=" + realCode;
@@ -317,10 +388,16 @@ async function getStock(stock) {
 
   if (!basic || !basic.price) return null;
 
+  let day = [];
+  let week = [];
+  let month = [];
   let tech = {};
+
   try {
-    const klines = await getKline(stock.code);
-    tech = calcPosition(basic, klines);
+    day = await getKline(stock.code, "day");
+    week = await getKline(stock.code, "week");
+    month = await getKline(stock.code, "month");
+    tech = calcCore(basic, day);
   } catch (e) {
     tech = {
       ma5: null,
@@ -333,16 +410,29 @@ async function getStock(stock) {
       macd: { signal: "K线接口暂不可用" },
       trendScore: 0,
       riskScore: 0,
+      chanceScore: 0,
+      level: "没机会",
+      levelClass: "neutral",
       shortPressure: "未知",
       positionText: "K线接口暂不可用",
       riskText: "K线接口暂不可用",
-      actionAdvice: "行情不完整，先观察"
+      buyPoint: "K线接口暂不可用",
+      sellPoint: "K线接口暂不可用",
+      actionAdvice: "行情不完整，先观察",
+      positionAdvice: "0%—10%",
+      stopLoss: null,
+      defenseLine: null
     };
   }
 
   return {
     ...basic,
-    ...tech
+    ...tech,
+    kline: {
+      day: enrichKline(day).slice(-80),
+      week: enrichKline(week).slice(-80),
+      month: enrichKline(month).slice(-80)
+    }
   };
 }
 
@@ -375,9 +465,7 @@ module.exports = async function handler(req, res) {
         { code: "002594", name: "比亚迪" },
         { code: "300308", name: "中际旭创" },
         { code: "300502", name: "新易盛" },
-        { code: "300394", name: "天孚通信" },
-        { code: "688981", name: "中芯国际" },
-        { code: "002371", name: "北方华创" }
+        { code: "002938", name: "鹏鼎控股" }
       ];
     }
 
