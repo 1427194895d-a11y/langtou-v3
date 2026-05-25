@@ -1,152 +1,189 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>浪投 A股实时版 V4</title>
-<style>
-body{margin:0;background:#050607;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",Arial}
-.app{padding:22px}
-h1{font-size:28px;margin:12px 0 4px}
-.sub{color:#999;font-size:14px;margin-bottom:18px}
-.search{display:flex;gap:10px}
-input{flex:1;background:#111;border:1px solid #333;border-radius:12px;color:#fff;padding:14px;font-size:16px}
-button{background:#e9343f;color:#fff;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:700}
-.tip{color:#d6b36a;margin:12px 0 18px;font-size:14px}
-.status{color:#aaa;text-align:center;margin:28px 0}
-.card{background:#101113;border:1px solid #282828;border-radius:14px;padding:14px;margin:12px 0}
-.row{display:flex;justify-content:space-between;gap:10px}
-.name{font-size:20px;font-weight:800}
-.code{color:#888;font-size:13px;margin-top:4px}
-.red{color:#ff4d5a}.green{color:#20c27a}
-.price{font-size:23px;font-weight:800}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;color:#bbb;font-size:13px}
-.box{background:#08090a;border-radius:10px;padding:10px;line-height:1.5}
-.section{margin-top:12px;padding:11px;border-radius:10px;background:#0b0c0d;color:#ccc;font-size:13px;line-height:1.6}
-.signal{margin-top:12px;padding:11px;border-radius:10px;background:#19120a;color:#ffd27a;font-size:14px;line-height:1.6}
-.risk{background:#160b0d;color:#ff9ca5}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>浪投 A股实时版 V8</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;padding:22px;background:#050607;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+    .app{max-width:880px;margin:0 auto}
+    h1{font-size:30px;margin:20px 0 8px}
+    .sub{color:#9ca3af;line-height:1.6;font-size:14px}
+    .warn{color:#d6b36a;margin:14px 0 18px;font-size:14px;line-height:1.6}
+    .search{display:flex;gap:10px;margin:18px 0 12px}
+    input{flex:1;background:#0c0f12;color:white;border:1px solid #242830;border-radius:14px;padding:15px;font-size:16px;outline:none}
+    button{border:0;border-radius:14px;padding:14px 18px;background:#e11d48;color:white;font-size:16px;font-weight:700}
+    .rank-btn{width:100%;margin:8px 0 18px;background:linear-gradient(135deg,#ef4444,#f59e0b);color:#111827}
+    .time{text-align:center;color:#9ca3af;margin:20px 0;font-size:14px}
+    .loading{text-align:center;color:#d1d5db;padding:30px 0;line-height:1.7}
+    .title{font-size:21px;font-weight:800;color:#fbbf24;margin:20px 0 12px}
+    .card{background:#0b0e11;border:1px solid #242830;border-radius:20px;padding:20px;margin:18px 0}
+    .top{display:flex;justify-content:space-between;gap:12px}
+    .name{font-size:23px;font-weight:800}
+    .code{color:#9ca3af;margin-top:6px;font-size:14px}
+    .price{font-size:27px;font-weight:800;color:#22c55e;text-align:right}
+    .red{color:#ef4444}
+    .tag{display:inline-block;margin-top:10px;padding:6px 10px;border-radius:999px;font-size:13px;font-weight:800;background:#1f2937;color:#e5e7eb}
+    .great{background:#fbbf24;color:#111827}
+    .chance{background:#22c55e;color:#052e16}
+    .danger{background:#ef4444;color:white}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}
+    .box{background:#050708;border-radius:14px;padding:13px;min-height:68px}
+    .label{color:#9ca3af;font-size:13px;margin-bottom:6px}
+    .value{color:#f3f4f6;font-size:16px;word-break:break-word}
+    .section{margin-top:13px;background:#050708;border-radius:14px;padding:14px;line-height:1.7;color:#d1d5db;font-size:14px}
+    .section b{color:white}
+  </style>
 </head>
+
 <body>
-<div class="app">
-<h1>浪投 A股实时版 V4</h1>
-<div class="sub">实时行情 + 均线位置 + MACD + 量能 + 风险评分 + 仓位建议</div>
+  <div class="app">
+    <h1>浪投 A股实时版 V8</h1>
+    <div class="sub">实时行情 + 全市场每日机会榜 + 均线 + MACD + 量能 + 风险评分 + 仓位建议</div>
+    <div class="warn">辅助决策，不保证盈利；高位股严格控制仓位和止损。</div>
 
-<div class="search">
-<input id="q" placeholder="搜索股票代码/名称，如 300750 宁德时代">
-<button onclick="searchStocks()">搜索</button>
-</div>
-
-<div class="tip">辅助决策，不保证盈利；高位股严格控制仓位和止损。</div>
-<div id="status" class="status">正在连接实时行情...</div>
-<div id="list"></div>
-</div>
-
-<script>
-async function loadStocks(keyword=""){
- const status=document.getElementById("status");
- const list=document.getElementById("list");
- status.innerText="加载中...";
- list.innerHTML="";
-
- try{
-  const url="/api/stocks"+(keyword?"?q="+encodeURIComponent(keyword):"");
-  const res=await fetch(url);
-  const json=await res.json();
-
-  if(!json.success){
-   status.innerText="接口返回失败："+(json.message||"未知错误");
-   return;
-  }
-
-  const data=json.data||[];
-  if(data.length===0){
-   status.innerText="没有搜到结果，可以试试代码，比如 300750、600519、002938";
-   return;
-  }
-
-  status.innerText="更新时间："+(json.updateTime||"实时/准实时");
-
-  list.innerHTML=data.map(x=>{
-   const up=Number(x.pct)>=0;
-   const cls=up?"red":"green";
-   const macd=x.macd||{};
-   return `
-   <div class="card">
-    <div class="row">
-     <div>
-      <div class="name">${x.name||x.code}</div>
-      <div class="code">${x.code}</div>
-     </div>
-     <div style="text-align:right">
-      <div class="price ${cls}">${x.price}</div>
-      <div class="${cls}">${x.pct}%</div>
-     </div>
+    <div class="search">
+      <input id="keyword" placeholder="搜索股票代码/名称，如 300750 宁德时代" />
+      <button onclick="searchStock()">搜索</button>
     </div>
 
-    <div class="grid">
-     <div class="box">成交额<br>${formatAmount(x.amount)}</div>
-     <div class="box">5日偏离<br>${val(x.ma5Distance)}%</div>
-     <div class="box">趋势评分<br>${val(x.trendScore)}</div>
-     <div class="box">风险评分<br>${val(x.riskScore)}</div>
-    </div>
+    <button class="rank-btn" onclick="loadRank()">查看全市场每日机会榜</button>
 
-    <div class="grid">
-     <div class="box">MA5<br>${val(x.ma5)}</div>
-     <div class="box">MA20<br>${val(x.ma20)}</div>
-     <div class="box">MA30<br>${val(x.ma30)}</div>
-     <div class="box">季度线/MA60<br>${val(x.ma60)}</div>
-    </div>
+    <div id="time" class="time"></div>
+    <div id="result"></div>
+  </div>
 
-    <div class="section">
-     <b>位置判断：</b><br>${x.positionText||"-"}
-    </div>
+  <script>
+    function showLoading(text){
+      document.getElementById("result").innerHTML='<div class="loading">'+text+'</div>';
+    }
 
-    <div class="section">
-     <b>量能：</b><br>${x.volumeSignal||"-"}<br>
-     近5日均额：${formatAmount(x.avgAmount5)}
-    </div>
+    function v(x){
+      if(x===null||x===undefined||x==="") return "-";
+      return x;
+    }
 
-    <div class="section">
-     <b>MACD：</b><br>
-     ${macd.signal||"-"}<br>
-     DIF：${val(macd.dif)}　DEA：${val(macd.dea)}　MACD：${val(macd.macd)}
-    </div>
+    function money(n){
+      n=Number(n||0);
+      if(!n) return "-";
+      if(n>=100000000) return (n/100000000).toFixed(2)+"亿";
+      if(n>=10000) return (n/10000).toFixed(2)+"万";
+      return n.toFixed(2);
+    }
 
-    <div class="section risk">
-     <b>空头压力：</b>${x.shortPressure||"-"}<br>
-     ${x.riskText||"-"}
-    </div>
+    function levelClass(item){
+      if(item.levelClass==="great") return "tag great";
+      if(item.levelClass==="chance") return "tag chance";
+      if(item.levelClass==="danger") return "tag danger";
+      return "tag";
+    }
 
-    <div class="signal">
-     <b>加仓/减仓建议：</b><br>${x.actionAdvice||"观察为主"}
-    </div>
-   </div>`;
-  }).join("");
+    function card(item,index){
+      const isDown=Number(item.pct||0)<0;
+      const priceClass=isDown?"price red":"price";
 
- }catch(e){
-  status.innerText="连接失败："+e.message;
- }
-}
+      return `
+        <div class="card">
+          <div class="top">
+            <div>
+              <div class="name">${index?index+". ":""}${v(item.name)}</div>
+              <div class="code">${v(item.code)}</div>
+              <div class="${levelClass(item)}">${v(item.level)}</div>
+            </div>
+            <div>
+              <div class="${priceClass}">${v(item.price)}</div>
+              <div class="${isDown?"red":""}" style="text-align:right;margin-top:4px;">${v(item.pct)}%</div>
+            </div>
+          </div>
 
-function searchStocks(){
- loadStocks(document.getElementById("q").value.trim());
-}
+          <div class="grid">
+            <div class="box"><div class="label">机会分</div><div class="value">${v(item.opportunityScore)}</div></div>
+            <div class="box"><div class="label">风险分</div><div class="value">${v(item.riskScore)}</div></div>
+            <div class="box"><div class="label">成交额</div><div class="value">${money(item.amount)}</div></div>
+            <div class="box"><div class="label">换手率</div><div class="value">${v(item.turnover)}%</div></div>
+            <div class="box"><div class="label">MA5</div><div class="value">${v(item.ma5)}</div></div>
+            <div class="box"><div class="label">MA20</div><div class="value">${v(item.ma20)}</div></div>
+            <div class="box"><div class="label">MA30</div><div class="value">${v(item.ma30)}</div></div>
+            <div class="box"><div class="label">MA60</div><div class="value">${v(item.ma60)}</div></div>
+            <div class="box"><div class="label">支撑位</div><div class="value">${v(item.support)}</div></div>
+            <div class="box"><div class="label">压力位</div><div class="value">${v(item.pressure)}</div></div>
+          </div>
 
-function formatAmount(n){
- n=Number(n||0);
- if(!n)return "-";
- if(n>=100000000)return(n/100000000).toFixed(2)+"亿";
- if(n>=10000)return(n/10000).toFixed(2)+"万";
- return n;
-}
+          <div class="section"><b>位置判断：</b><br>${v(item.positionText)}</div>
+          <div class="section"><b>量能：</b><br>${v(item.volumeSignal)}</div>
+          <div class="section"><b>MACD：</b><br>${item.macd?v(item.macd.signal):"-"}</div>
+          <div class="section"><b>买点观察：</b><br>${v(item.buyPoint)}</div>
+          <div class="section"><b>风险提示：</b><br>${v(item.riskText)}</div>
+          <div class="section"><b>减仓/卖点：</b><br>${v(item.sellPoint)}</div>
+          <div class="section"><b>仓位建议：</b><br>${v(item.positionAdvice)}</div>
+          <div class="section"><b>操作建议：</b><br>${v(item.actionAdvice)}</div>
+          <div class="section"><b>止损参考：</b>${v(item.stopLoss)}　<b>防守线：</b>${v(item.defenseLine)}</div>
+        </div>
+      `;
+    }
 
-function val(v){
- if(v===null||v===undefined||v==="")return "-";
- return v;
-}
+    function render(json){
+      const result=document.getElementById("result");
 
-loadStocks();
-</script>
+      document.getElementById("time").innerText=json.updateTime?"更新时间："+json.updateTime:"";
+
+      const list=json.data||[];
+
+      if(!list.length){
+        result.innerHTML='<div class="loading">暂时没有数据。盘前/休市数据可能较少，开盘后再看更准。</div>';
+        return;
+      }
+
+      let html="";
+      if(json.title){
+        html+='<div class="title">'+json.title+'</div>';
+      }
+
+      html+=list.map((item,i)=>card(item,json.mode==="rank"?i+1:0)).join("");
+      result.innerHTML=html;
+    }
+
+    async function callApi(params){
+      showLoading("正在加载数据，请稍等...");
+
+      try{
+        const url=new URL("/api/stocks",window.location.origin);
+
+        Object.keys(params).forEach(function(key){
+          url.searchParams.set(key,params[key]);
+        });
+
+        url.searchParams.set("t",Date.now());
+
+        const res=await fetch(url.toString());
+        const json=await res.json();
+
+        if(!json.success){
+          showLoading("数据暂时不可用，请稍后再试。");
+          return;
+        }
+
+        render(json);
+      }catch(e){
+        showLoading("连接失败，请刷新重试。");
+      }
+    }
+
+    function searchStock(){
+      const q=document.getElementById("keyword").value.trim();
+      callApi({q:q||"300750"});
+    }
+
+    function loadRank(){
+      callApi({rank:"1"});
+    }
+
+    document.getElementById("keyword").addEventListener("keydown",function(e){
+      if(e.key==="Enter") searchStock();
+    });
+
+    callApi({q:"300750"});
+  </script>
 </body>
 </html>
