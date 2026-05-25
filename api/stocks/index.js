@@ -649,11 +649,12 @@ async function getStock(stock) {
   if (!basic || !basic.price) return null;
 
   basic.name = realName;
-
-  const dayK = await getKline(stock.code, 101, 120);
-  const weekK = await getKline(stock.code, 102, 80);
-  const monthK = await getKline(stock.code, 103, 60);
-  const finance = await getFinance(stock.code);
+const [dayK, weekK, monthK, finance] = await Promise.all([
+  getKline(stock.code, 101, 120),
+  getKline(stock.code, 102, 80),
+  getKline(stock.code, 103, 60),
+  getFinance(stock.code)
+]);
   const strategy = makeStrategy(basic, dayK, finance);
 
   return {
@@ -692,11 +693,8 @@ module.exports = async function handler(req, res) {
       targets = [found];
     } else {
       targets = [
-        { code: "300750", name: "宁德时代" },
-        { code: "600519", name: "贵州茅台" },
-        { code: "002594", name: "比亚迪" },
-        { code: "002938", name: "鹏鼎控股" }
-      ];
+    { code: "300750", name: "宁德时代" }
+];
     }
 
     const data = [];
