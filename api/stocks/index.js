@@ -202,9 +202,30 @@ async function getKline(code, klt, limit) {
 }
 
 async function getMarketCandidates() {
-  const cacheKey = "rank_candidates_v8";
+  const cacheKey = "rank_candidates_v8_1";
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
+
+  const fallback = [
+    { code: "300750", name: "宁德时代" },
+    { code: "688981", name: "中芯国际" },
+    { code: "603501", name: "韦尔股份" },
+    { code: "002463", name: "沪电股份" },
+    { code: "300308", name: "中际旭创" },
+    { code: "300394", name: "天孚通信" },
+    { code: "300502", name: "新易盛" },
+    { code: "002371", name: "北方华创" },
+    { code: "002594", name: "比亚迪" },
+    { code: "601138", name: "工业富联" },
+    { code: "000977", name: "浪潮信息" },
+    { code: "600584", name: "长电科技" },
+    { code: "002156", name: "通富微电" },
+    { code: "600309", name: "万华化学" },
+    { code: "600519", name: "贵州茅台" },
+    { code: "000858", name: "五粮液" },
+    { code: "601318", name: "中国平安" },
+    { code: "600036", name: "招商银行" }
+  ];
 
   try {
     const pages = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -221,8 +242,11 @@ async function getMarketCandidates() {
 
     for (const r of results) {
       if (r.status !== "fulfilled") continue;
+
       const list =
-        r.value && r.value.data && r.value.data.diff ? r.value.data.diff : [];
+        r.value && r.value.data && r.value.data.diff
+          ? r.value.data.diff
+          : [];
 
       for (const x of list) {
         all.push({
@@ -240,11 +264,13 @@ async function getMarketCandidates() {
       .filter(x => {
         if (!x.code || !/^\d{6}$/.test(x.code)) return false;
         if (!x.name) return false;
-        if (x.name.includes("ST") || x.name.includes("*ST") || x.name.includes("退")) return false;
-        if (!x.price || x.price <= 2) return false;
-        if (!x.amount || x.amount < 80000000) return false;
-        if (x.pct < -4) return false;
-        if (x.turnover && x.turnover < 1) return false;
+        if (x.name.includes("ST") || x.name.includes("*ST")) return false;
+        if (x.name.includes("退")) return false;
+
+        if (x.price && x.price <= 2) return false;
+        if (x.amount && x.amount < 50000000) return false;
+        if (x.pct && x.pct < -6) return false;
+
         return true;
       })
       .map(x => {
@@ -253,10 +279,11 @@ async function getMarketCandidates() {
         if (x.amount > 1000000000) fastScore += 25;
         else if (x.amount > 500000000) fastScore += 18;
         else if (x.amount > 200000000) fastScore += 12;
+        else if (x.amount > 0) fastScore += 5;
 
         if (x.pct > 0 && x.pct < 7) fastScore += 20;
         else if (x.pct >= 7 && x.pct < 9.8) fastScore += 12;
-        else if (x.pct < 0) fastScore -= 10;
+        else if (x.pct < 0) fastScore -= 8;
 
         if (x.turnover >= 3 && x.turnover <= 15) fastScore += 20;
         else if (x.turnover > 15) fastScore += 5;
@@ -270,14 +297,16 @@ async function getMarketCandidates() {
       })
       .slice(0, 30);
 
+    if (!candidates.length) {
+      cacheSet(cacheKey, fallback);
+      return fallback;
+    }
+
     cacheSet(cacheKey, candidates);
     return candidates;
   } catch (e) {
-    return [
-      { code: "300750", name: "宁德时代" },
-      { code: "600519", name: "贵州茅台" },
-      { code: "002594", name: "比亚迪" }
-    ];
+    cacheSet(cacheKey, fallback);
+    return fallback;
   }
 }
 
