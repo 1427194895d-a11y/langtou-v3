@@ -1,7 +1,80 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="浪投"><link rel="manifest" href="/manifest.json"><title>浪投A股实时版</title><style>
-body{margin:0;background:#070707;color:#eee;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",Arial}.top{position:sticky;top:0;background:#090909ee;backdrop-filter:blur(10px);padding:18px 14px 10px;border-bottom:1px solid #222}.title{font-size:22px;font-weight:800}.sub{font-size:12px;color:#999;margin-top:4px}.search{display:flex;gap:8px;margin-top:12px}input{flex:1;background:#171717;color:#fff;border:1px solid #333;border-radius:12px;padding:12px;font-size:16px}button{background:#e53935;color:#fff;border:0;border-radius:12px;padding:0 14px;font-weight:700}.cards{padding:12px}.card{background:#111;border:1px solid #262626;border-radius:16px;margin-bottom:10px;padding:13px}.row{display:flex;justify-content:space-between;gap:10px}.name{font-size:17px;font-weight:800}.code{color:#888;font-size:12px}.price{font-size:18px;font-weight:800}.red{color:#ff4d4f}.green{color:#20c997}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.cell{background:#191919;border-radius:10px;padding:8px}.k{color:#888;font-size:11px}.v{font-size:13px;margin-top:3px}.signal{margin-top:10px;padding:10px;border-radius:12px;background:#201313;border:1px solid #3a2020}.risk{font-size:12px;color:#bbb;margin-top:8px;line-height:1.45}.foot{padding:18px;color:#777;font-size:12px;line-height:1.6}.pill{font-size:12px;border-radius:999px;padding:3px 8px;background:#222;color:#ddd}.loading{text-align:center;color:#999;padding:30px}.warn{color:#ffcc66;font-size:12px;margin-top:8px}</style></head><body><div class="top"><div class="title">浪投 A股实时版 V2</div><div class="sub" id="time">正在连接实时行情...</div><div class="search"><input id="q" placeholder="搜索股票代码/名称，如 300750 宁德"><button onclick="load()">搜索</button></div><div class="warn">辅助决策，不保证盈利；高位股严格控制仓位和止损。</div></div><div class="cards" id="list"><div class="loading">加载中...</div></div><div class="foot">数据源：东方财富公开行情接口，经云端转发。免费源可能延迟、限流或偶发失效；商用需接正规行情授权。</div><script>
-const fmtAmt=n=>{n=Number(n);if(!isFinite(n))return '-';if(n>1e8)return (n/1e8).toFixed(1)+'亿';if(n>1e4)return (n/1e4).toFixed(0)+'万';return n};
-function cls(x){return Number(x)>=0?'red':'green'}
-async function load(){const q=document.getElementById('q').value.trim();document.getElementById('list').innerHTML='<div class="loading">刷新行情中...</div>';try{const r=await fetch('/api/stocks'+(q?'?q='+encodeURIComponent(q):''));const j=await r.json();document.getElementById('time').textContent='更新时间：'+j.updateTime+'｜显示 '+j.count+' 只';let rows=(j.rows||[]).slice(0,80);document.getElementById('list').innerHTML=rows.map(x=>`<div class="card"><div class="row"><div><div class="name">${x.name} <span class="pill">${x.signal}</span></div><div class="code">${x.code}</div></div><div style="text-align:right"><div class="price ${cls(x.pct)}">${x.price}</div><div class="${cls(x.pct)}">${Number(x.pct).toFixed(2)}%</div></div></div><div class="grid"><div class="cell"><div class="k">成交额</div><div class="v">${fmtAmt(x.amount)}</div></div><div class="cell"><div class="k">量比</div><div class="v">${x.volRatio}</div></div><div class="cell"><div class="k">换手</div><div class="v">${x.turnover}%</div></div><div class="cell"><div class="k">最高/最低</div><div class="v">${x.high}/${x.low}</div></div><div class="cell"><div class="k">今开</div><div class="v">${x.open}</div></div><div class="cell"><div class="k">短线分</div><div class="v">${x.score}</div></div></div><div class="signal">${x.reason}</div><div class="risk">纪律：只在板块共振、分时承接和回封/突破确认后考虑；跌破关键分时均线或板块退潮，优先减仓止损。</div></div>`).join('') || '<div class="loading">没搜到结果</div>'}catch(e){document.getElementById('list').innerHTML='<div class="loading">连接失败：需要先部署到 Vercel/云端后才能访问实时接口。</div>'}}
-load();setInterval(load,15000);
-</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>浪投 A股实时版 V3</title>
+<style>
+body{margin:0;background:#050607;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",Arial}
+.app{padding:22px}
+h1{font-size:28px;margin:12px 0 4px}
+.sub{color:#999;font-size:14px;margin-bottom:20px}
+.search{display:flex;gap:10px}
+input{flex:1;background:#111;border:1px solid #333;border-radius:12px;color:#fff;padding:14px;font-size:16px}
+button{background:#e9343f;color:#fff;border:0;border-radius:12px;padding:0 18px;font-size:16px;font-weight:700}
+.tip{color:#d6b36a;margin:12px 0 18px;font-size:14px}
+.status{color:#aaa;text-align:center;margin:30px 0}
+.card{background:#101113;border:1px solid #282828;border-radius:14px;padding:14px;margin:12px 0}
+.row{display:flex;justify-content:space-between;gap:10px}
+.name{font-size:19px;font-weight:800}
+.code{color:#888;font-size:13px;margin-top:4px}
+.red{color:#ff4d5a}.green{color:#20c27a}
+.price{font-size:22px;font-weight:800}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;color:#bbb;font-size:13px}
+.box{background:#08090a;border-radius:10px;padding:10px}
+.signal{margin-top:12px;padding:10px;border-radius:10px;background:#19120a;color:#ffd27a;font-size:14px}
+.reason{color:#aaa;font-size:13px;margin-top:8px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="app">
+<h1>浪投 A股实时版 V3</h1>
+<div class="sub">已连接 Vercel 后端实时行情接口</div>
+<div class="search">
+<input id="q" placeholder="搜索股票代码/名称，如 300750 宁德时代">
+<button onclick="searchStocks()">搜索</button>
+</div>
+<div class="tip">辅助决策，不保证盈利；高位股严格控制仓位和止损。</div>
+<div id="status" class="status">正在连接实时行情...</div>
+<div id="list"></div>
+</div>
+<script>
+async function loadStocks(keyword=""){
+ const status=document.getElementById("status");
+ const list=document.getElementById("list");
+ status.innerText="加载中...";
+ list.innerHTML="";
+ try{
+  const url="/api/stocks"+(keyword?"?q="+encodeURIComponent(keyword):"");
+  const res=await fetch(url);
+  const json=await res.json();
+  if(!json.success){status.innerText="接口返回失败："+(json.message||"未知错误");return;}
+  const data=json.data||[];
+  if(data.length===0){status.innerText="没有搜到结果，可以试试代码，比如 300750、600519";return;}
+  status.innerText="更新时间："+(json.updateTime||"实时/准实时");
+  list.innerHTML=data.slice(0,30).map(x=>{
+   const up=Number(x.pct)>=0;
+   const cls=up?"red":"green";
+   return `<div class="card">
+    <div class="row">
+     <div><div class="name">${x.name}</div><div class="code">${x.code}</div></div>
+     <div style="text-align:right"><div class="price ${cls}">${x.price}</div><div class="${cls}">${x.pct}%</div></div>
+    </div>
+    <div class="grid">
+     <div class="box">成交额<br>${formatAmount(x.amount)}</div>
+     <div class="box">量比<br>${x.volumeRatio}</div>
+     <div class="box">换手率<br>${x.turnover}%</div>
+     <div class="box">短线评分<br>${x.score}</div>
+    </div>
+    <div class="signal">${x.signal}</div>
+    <div class="reason">${x.reason}</div>
+   </div>`;
+  }).join("");
+ }catch(e){status.innerText="连接失败："+e.message;}
+}
+function searchStocks(){loadStocks(document.getElementById("q").value.trim());}
+function formatAmount(n){n=Number(n||0);if(n>=100000000)return(n/100000000).toFixed(2)+"亿";if(n>=10000)return(n/10000).toFixed(2)+"万";return n;}
+loadStocks();
+</script>
+</body>
+</html>
