@@ -73,13 +73,34 @@ async function searchStock(q) {
   return null;
 }
 
+async function getStockName(code, fallbackName) {
+  if (fallbackName && fallbackName !== code) return fallbackName;
+
+  try {
+    const url =
+      "https://searchapi.eastmoney.com/api/suggest/get?input=" +
+      encodeURIComponent(code) +
+      "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
+
+    const json = JSON.parse(await getText(url));
+    const list =
+      json && json.QuotationCodeTable && json.QuotationCodeTable.Data
+        ? json.QuotationCodeTable.Data
+        : [];
+
+    const item = list.find(x => x.Code === code);
+    if (item && item.Name) return item.Name;
+  } catch (e) {}
+
+  return fallbackName || code;
+}
+
 function parseQuote(text, stock) {
   const m = String(text || "").match(/="([^"]+)"/);
   if (!m) return null;
 
   const a = m[1].split("~");
 
-  const name = a[1] || stock.name || stock.code;
   const code = a[2] || stock.code;
   const price = Number(a[3] || 0);
   const preClose = Number(a[4] || 0);
@@ -98,7 +119,7 @@ function parseQuote(text, stock) {
 
   return {
     code,
-    name,
+    name: stock.name || code,
     price,
     pct,
     open,
@@ -291,19 +312,51 @@ function calcMacd(closes) {
   };
 }
 
-function lastHighest(rows, n) {
+function recentHigh(rows, n) {
   if (!rows || rows.length < 2) return null;
   const part = rows.slice(Math.max(0, rows.length - n - 1), rows.length - 1);
   if (!part.length) return null;
   return Math.max(...part.map(x => x.high || 0));
 }
 
-function lastLowest(rows, n) {
+function recentLow(rows, n) {
   if (!rows || rows.length < 2) return null;
   const part = rows.slice(Math.max(0, rows.length - n - 1), rows.length - 1);
   const lows = part.map(x => x.low || 0).filter(Boolean);
   if (!lows.length) return null;
   return Math.min(...lows);
+}
+
+function calcSupportResistance(price, dayK, ma5, ma10, ma20, ma30, ma60) {
+  const h20 = recentHigh(dayK, 20);
+  const h60 = recentHigh(dayK, 60);
+  const l20 = recentLow(dayK, 20);
+  const l60 = recentLow(dayK, 60);
+
+  const supports = [ma5, ma10, ma20, ma30, ma60, l20, l60]
+    .filter(x => x && x < price)
+    .sort((a, b) => b - a);
+
+  const pressures = [ma5, ma10, ma20, ma30, ma60, h20, h60]
+    .filter(x => x && x > price)
+    .sort((a, b) => a - b);
+
+  const support = supports.length ? Number(supports[0].toFixed(2)) : null;
+  const strongSupport = supports.length > 1 ? Number(supports[supports.length - 1].toFixed(2)) : support;
+
+  const pressure = pressures.length ? Number(pressures[0].toFixed(2)) : null;
+  const strongPressure = pressures.length > 1 ? Number(pressures[pressures.length - 1].toFixed(2)) : pressure;
+
+  return {
+    support,
+    strongSupport,
+    pressure,
+    strongPressure,
+    high20: h20 ? Number(h20.toFixed(2)) : null,
+    high60: h60 ? Number(h60.toFixed(2)) : null,
+    low20: l20 ? Number(l20.toFixed(2)) : null,
+    low60: l60 ? Number(l60.toFixed(2)) : null
+  };
 }
 
 function makeStrategy(basic, dayK, finance) {
@@ -319,6 +372,7 @@ function makeStrategy(basic, dayK, finance) {
   const avgAmount5 = sma(amounts, 5);
   const avgAmount20 = sma(amounts, 20);
   const macd = calcMacd(closes);
+  const sr = calcSupportResistance(price, dayK, ma5, ma10, ma20, ma30, ma60);
 
   let trendScore = 0;
   let volumeScore = 0;
@@ -433,18 +487,15 @@ function makeStrategy(basic, dayK, finance) {
     sell.push(macd.signal);
   }
 
-  const high20 = lastHighest(dayK, 20);
-  const low20 = lastLowest(dayK, 20);
-
-  if (high20 && price > high20 && basic.pct > 0) {
+  if (sr.high20 && price > sr.high20 && basic.pct > 0) {
     klineScore += 20;
     buy.push("突破20日新高，短线强度提升");
-  } else if (high20 && price >= high20 * 0.97 && basic.pct > 0) {
+  } else if (sr.high20 && price >= sr.high20 * 0.97 && basic.pct > 0) {
     klineScore += 12;
     buy.push("接近20日新高，短线强度较好");
   }
 
-  if (low20 && price <= low20 * 1.03) {
+  if (sr.low20 && price <= sr.low20 * 1.03) {
     riskScore += 10;
     risk.push("接近20日低位，趋势仍需修复");
   }
@@ -496,22 +547,33 @@ function makeStrategy(basic, dayK, finance) {
   let levelClass = "neutral";
   let positionAdvice = "0%—15%，观察为主";
   let actionAdvice = "暂时观察，等待重新放量或站上关键均线。";
+  let addPositionAdvice = "暂不适合加仓";
+  let reducePositionAdvice = "暂不需要主动减仓";
+
+  const isBreakMA5 = !!(ma5 && price < ma5);
+  const isBreakMA20 = !!(ma20 && price < ma20);
+  const isBreakMA30 = !!(ma30 && price < ma30);
+  const isBreakMA60 = !!(ma60 && price < ma60);
+  const isBroken = isBreakMA20 || isBreakMA30 || isBreakMA60;
 
   if (riskScore >= 65) {
     level = "风险大";
     levelClass = "danger";
     positionAdvice = "0%—10%，已有仓位优先减仓或止损";
     actionAdvice = "风险偏高，不建议新开仓；已有仓位以5日线、20日线为防守，破位严格减仓。";
+    reducePositionAdvice = "适合减仓或严格防守";
   } else if (opportunityScore >= 80 && trendScore >= 60 && riskScore <= 35) {
     level = "大机会";
     levelClass = "great";
     positionAdvice = "40%—70%，只适合分歧低吸或确认后持有，不建议无脑满仓";
     actionAdvice = "趋势、量能、动能或基本面共振较强；已有仓位可持有，无仓不要追高，等回踩5日线或分歧转一致。";
+    addPositionAdvice = "可在回踩不破5日线或突破压力位后分批加仓";
   } else if (opportunityScore >= 55 && trendScore >= 40 && riskScore <= 55) {
     level = "有机会";
     levelClass = "chance";
     positionAdvice = "20%—40%，适合小仓试错";
     actionAdvice = "有一定机会，可小仓试错；跌破5日线先减仓，跌破20日线退出观察。";
+    addPositionAdvice = "只能小仓试错，不适合重仓";
   }
 
   if (basic.pct >= 9 && ma5Distance !== null && ma5Distance > 6) {
@@ -519,8 +581,8 @@ function makeStrategy(basic, dayK, finance) {
     positionAdvice = "已有仓位持有观察；无仓谨慎，等待分歧低吸";
   }
 
-  const stopLoss = ma20 || ma30 || ma5 || null;
-  const defenseLine = ma5 || ma20 || null;
+  const stopLoss = ma20 || ma30 || ma5 || sr.support || null;
+  const defenseLine = ma5 || ma20 || sr.support || null;
 
   return {
     ma5,
@@ -533,6 +595,22 @@ function makeStrategy(basic, dayK, finance) {
     avgAmount20,
     volumeSignal,
     macd,
+
+    support: sr.support,
+    strongSupport: sr.strongSupport,
+    pressure: sr.pressure,
+    strongPressure: sr.strongPressure,
+    high20: sr.high20,
+    high60: sr.high60,
+    low20: sr.low20,
+    low60: sr.low60,
+
+    isBreakMA5,
+    isBreakMA20,
+    isBreakMA30,
+    isBreakMA60,
+    isBroken,
+
     trendScore: Math.max(0, Math.min(100, trendScore)),
     volumeScore: Math.max(-20, Math.min(100, volumeScore)),
     macdScore: Math.max(-20, Math.min(100, macdScore)),
@@ -541,25 +619,36 @@ function makeStrategy(basic, dayK, finance) {
     chanceScore: opportunityScore,
     opportunityScore,
     riskScore,
+
     level,
     levelClass,
     shortPressure: riskScore >= 60 ? "高" : riskScore >= 35 ? "中" : "低",
+
     positionText: pos.join("；") || "均线位置暂无明显优势",
     riskText: risk.join("；") || "暂未出现明显破位风险",
     buyPoint: buy.join("；") || "暂未出现高质量买点",
     sellPoint: sell.join("；") || "暂未出现强卖出信号",
+
     actionAdvice,
     positionAdvice,
+    addPositionAdvice,
+    reducePositionAdvice,
+
     stopLoss: stopLoss ? Number(stopLoss.toFixed(2)) : null,
     defenseLine: defenseLine ? Number(defenseLine.toFixed(2)) : null
   };
 }
 
 async function getStock(stock) {
+  const realName = await getStockName(stock.code, stock.name);
+  stock.name = realName;
+
   const quoteText = await getText("https://qt.gtimg.cn/q=" + marketCode(stock.code));
   const basic = parseQuote(quoteText, stock);
 
   if (!basic || !basic.price) return null;
+
+  basic.name = realName;
 
   const dayK = await getKline(stock.code, 101, 120);
   const weekK = await getKline(stock.code, 102, 80);
