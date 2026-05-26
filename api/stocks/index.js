@@ -7,6 +7,16 @@ function nowCn() {
   return new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
 }
 
+function n(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function round(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? Number(x.toFixed(2)) : null;
+}
+
 function cacheGet(key) {
   const item = CACHE.get(key);
   if (!item) return null;
@@ -21,7 +31,7 @@ function cacheSet(key, value) {
   CACHE.set(key, { time: Date.now(), value });
 }
 
-function getText(url, timeout = 9000) {
+function getText(url, timeout = 8000) {
   const cached = cacheGet(url);
   if (cached) return Promise.resolve(cached);
 
@@ -37,9 +47,7 @@ function getText(url, timeout = 9000) {
       },
       res => {
         let data = "";
-        res.on("data", c => {
-          data += c;
-        });
+        res.on("data", c => (data += c));
         res.on("end", () => {
           cacheSet(url, data);
           resolve(data);
@@ -56,19 +64,8 @@ function getText(url, timeout = 9000) {
   });
 }
 
-async function getJson(url, timeout = 9000) {
-  const text = await getText(url, timeout);
-  return JSON.parse(text);
-}
-
-function n(v) {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
-}
-
-function round(v) {
-  const x = Number(v);
-  return Number.isFinite(x) ? Number(x.toFixed(2)) : null;
+async function getJson(url, timeout = 8000) {
+  return JSON.parse(await getText(url, timeout));
 }
 
 function secid(code) {
@@ -87,22 +84,19 @@ function marketPrefix(code) {
 function fallbackStocks() {
   return [
     { code: "300750", name: "宁德时代" },
-    { code: "688981", name: "中芯国际" },
-    { code: "603501", name: "韦尔股份" },
+    { code: "002463", name: "沪电股份" },
     { code: "300308", name: "中际旭创" },
     { code: "300502", name: "新易盛" },
     { code: "300394", name: "天孚通信" },
-    { code: "002463", name: "沪电股份" },
     { code: "601138", name: "工业富联" },
     { code: "002371", name: "北方华创" },
+    { code: "688981", name: "中芯国际" },
+    { code: "603501", name: "韦尔股份" },
     { code: "600584", name: "长电科技" },
     { code: "002156", name: "通富微电" },
     { code: "000977", name: "浪潮信息" },
-    { code: "600309", name: "万华化学" },
     { code: "002594", name: "比亚迪" },
     { code: "600519", name: "贵州茅台" },
-    { code: "000858", name: "五粮液" },
-    { code: "601318", name: "中国平安" },
     { code: "600036", name: "招商银行" }
   ];
 }
@@ -115,9 +109,11 @@ function sma(arr, len) {
 
 function ema(arr, len) {
   if (!arr || !arr.length) return [];
+
   const k = 2 / (len + 1);
   const out = [];
   let prev = arr[0];
+
   out.push(prev);
 
   for (let i = 1; i < arr.length; i++) {
@@ -135,7 +131,7 @@ function calcMacd(closes) {
       dif: null,
       dea: null,
       macd: null,
-      signal: "历史数据不足，暂不能判断MACD"
+      signal: "历史数据不足"
     };
   }
 
@@ -155,7 +151,7 @@ function calcMacd(closes) {
   if (dif > dea && bar > 0 && bar > prev) {
     signal = "MACD金叉偏强，红柱放大";
   } else if (dif > dea && bar > 0) {
-    signal = "MACD多头，但动能需要继续观察";
+    signal = "MACD多头，但动能需观察";
   } else if (dif < dea && bar < 0 && bar < prev) {
     signal = "MACD死叉偏弱，绿柱放大";
   } else if (dif < dea) {
@@ -336,7 +332,7 @@ async function getKline(code, klt, limit) {
 
   for (const url of urls) {
     try {
-      const json = await getJson(url, 10000);
+      const json = await getJson(url, 8000);
       const rows =
         json && json.data && json.data.klines ? json.data.klines : [];
 
@@ -357,6 +353,36 @@ async function getKline(code, klt, limit) {
           turnover: n(a[10])
         };
       });
+    } catch (e) {}
+  }
+
+  if (String(klt) === "101") {
+    try {
+      const symbol = marketPrefix(code);
+      const url =
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=" +
+        symbol +
+        ",day,,," +
+        limit +
+        ",qfq";
+
+      const json = await getJson(url, 8000);
+      const d = json && json.data && json.data[symbol] ? json.data[symbol] : null;
+      const rows = d && (d.qfqday || d.day) ? d.qfqday || d.day : [];
+
+      if (rows.length) {
+        return rows.map(a => ({
+          date: a[0],
+          open: n(a[1]),
+          close: n(a[2]),
+          high: n(a[3]),
+          low: n(a[4]),
+          volume: n(a[5]),
+          amount: n(a[5]) * n(a[2]),
+          pct: 0,
+          turnover: 0
+        }));
+      }
     } catch (e) {}
   }
 
@@ -388,6 +414,7 @@ function analyze(basic, dayK) {
   const ma20 = sma(closes, 20);
   const ma30 = sma(closes, 30);
   const ma60 = sma(closes, 60);
+
   const avgAmount5 = sma(amounts, 5);
   const macd = calcMacd(closes);
 
@@ -465,7 +492,7 @@ function analyze(basic, dayK) {
   } else if (basic.amount > 500000000) {
     volumeScore += 10;
     buy.push("成交额超过5亿，有资金关注");
-  } else if (basic.amount > 50000000) {
+  } else if (basic.amount > 30000000) {
     volumeScore += 5;
     buy.push("小盘票有一定成交活跃度");
   }
@@ -475,10 +502,10 @@ function analyze(basic, dayK) {
     buy.push("相对5日均额放量上涨");
   }
 
-  if (basic.turnover >= 2 && basic.turnover <= 18 && basic.pct > 0) {
+  if (basic.turnover >= 1.5 && basic.turnover <= 25 && basic.pct > 0) {
     klineScore += 12;
     buy.push("换手活跃，短线辨识度提升");
-  } else if (basic.turnover > 28) {
+  } else if (basic.turnover > 35) {
     riskScore += 15;
     risk.push("换手过高，短线分歧较大");
   }
@@ -494,7 +521,7 @@ function analyze(basic, dayK) {
     riskScore += 8;
     buy.push("涨停或接近涨停，短线辨识度高");
     risk.push("涨幅过大，追高风险增加");
-  } else if (basic.pct <= -6) {
+  } else if (basic.pct <= -7) {
     riskScore += 20;
     sell.push("跌幅较大，短线风险上升");
   }
@@ -621,7 +648,7 @@ async function getStock(stock) {
       available: false,
       level: "暂不读取",
       summary:
-        "严格扩容版暂时关闭复杂财务接口，优先保证大小盘全覆盖、均线、MACD、支撑压力和机会榜"
+        "V10稳定版暂时关闭复杂财务接口，优先保证行情、均线、MACD、支撑压力和机会榜稳定"
     },
     kline: {
       day: dayK.slice(-80),
@@ -644,7 +671,8 @@ async function getMarketCandidates() {
           page +
           "&pz=500&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f6,f8";
 
-        const json = await getJson(url, 8000);
+        const json = await getJson(url, 7000);
+
         const list =
           json && json.data && json.data.diff ? json.data.diff : [];
 
@@ -669,8 +697,8 @@ async function getMarketCandidates() {
         !x.name.includes("*ST") &&
         !x.name.includes("退") &&
         x.price > 2 &&
-        x.amount >= 50000000 &&
-        x.pct >= -6
+        x.amount >= 30000000 &&
+        x.pct >= -7
       );
     });
 
@@ -684,16 +712,16 @@ async function getMarketCandidates() {
         else if (x.amount >= 3000000000) fastScore += 20;
         else if (x.amount >= 1000000000) fastScore += 15;
         else if (x.amount >= 300000000) fastScore += 10;
-        else if (x.amount >= 50000000) fastScore += 5;
+        else if (x.amount >= 30000000) fastScore += 5;
 
-        if (x.pct >= 1.5 && x.pct < 9.8) fastScore += 22;
-        else if (x.pct > 0 && x.pct < 1.5) fastScore += 10;
+        if (x.pct >= 1 && x.pct < 9.8) fastScore += 22;
+        else if (x.pct > 0 && x.pct < 1) fastScore += 10;
         else if (x.pct >= 9.8) fastScore += 15;
         else if (x.pct < 0) fastScore -= 8;
 
-        if (x.turnover >= 2 && x.turnover <= 18) fastScore += 18;
-        else if (x.turnover > 18 && x.turnover <= 28) fastScore += 6;
-        else if (x.turnover > 28) fastScore -= 8;
+        if (x.turnover >= 1.5 && x.turnover <= 25) fastScore += 18;
+        else if (x.turnover > 25 && x.turnover <= 35) fastScore += 6;
+        else if (x.turnover > 35) fastScore -= 8;
 
         return {
           ...x,
@@ -741,29 +769,15 @@ async function handleRank() {
   const preFiltered = candidates
     .filter(x => {
       if (!x.code) return false;
-      if (x.name && (x.name.includes("ST") || x.name.includes("退"))) return false;
+      if (x.name && (x.name.includes("ST") || x.name.includes("退"))) {
+        return false;
+      }
       if (x.price && x.price <= 2) return false;
       if (x.amount && x.amount < 30000000) return false;
       if (x.pct < -7) return false;
       return true;
     })
-    .sort((a, b) => {
-      const sa =
-        Math.log10(a.amount || 1) * 4 +
-        (a.pct > 0 ? 12 : 0) +
-        (a.pct >= 1 && a.pct < 9.8 ? 20 : 0) +
-        (a.turnover >= 1.5 && a.turnover <= 25 ? 15 : 0) +
-        (a.turnover > 25 && a.turnover <= 35 ? 5 : 0);
-
-      const sb =
-        Math.log10(b.amount || 1) * 4 +
-        (b.pct > 0 ? 12 : 0) +
-        (b.pct >= 1 && b.pct < 9.8 ? 20 : 0) +
-        (b.turnover >= 1.5 && b.turnover <= 25 ? 15 : 0) +
-        (b.turnover > 25 && b.turnover <= 35 ? 5 : 0);
-
-      return sb - sa;
-    });
+    .sort((a, b) => b.fastScore - a.fastScore);
 
   const deepList = preFiltered.slice(0, 80);
 
@@ -791,25 +805,18 @@ async function handleRank() {
     .sort((a, b) => b.totalRankScore - a.totalRankScore);
 
   const strictList = ranked.filter(x => {
-    const opportunity = x.opportunityScore || 0;
-    const risk = x.riskScore || 0;
-    const trend = x.trendScore || 0;
-    const kline = x.klineScore || 0;
-    const macd = x.macdScore || 0;
-
     return (
-      opportunity >= 42 &&
-      risk <= 65 &&
-      trend >= 8 &&
-      kline >= 4 &&
-      macd >= -18
+      (x.opportunityScore || 0) >= 42 &&
+      (x.riskScore || 0) <= 65 &&
+      (x.trendScore || 0) >= 8 &&
+      (x.klineScore || 0) >= 4 &&
+      (x.macdScore || 0) >= -18
     );
   });
 
   let finalList = strictList;
 
-  // 关键：如果严格机会太少，不再只显示6支，自动补充综合排名靠前的票
-  if (finalList.length < 80) {
+  if (finalList.length < 50) {
     const extraList = ranked.filter(x => {
       const risk = x.riskScore || 0;
       const opportunity = x.opportunityScore || 0;
@@ -870,11 +877,7 @@ async function handleRank() {
       ...x,
       level: label,
       levelClass:
-        label === "强大机会"
-          ? "great"
-          : label === "大机会"
-          ? "great"
-          : "chance",
+        label === "强大机会" || label === "大机会" ? "great" : "chance",
       sizeTag,
       positionAdvice:
         label === "强大机会"
@@ -901,164 +904,14 @@ async function handleRank() {
     title: "全市场每日机会榜",
     updateTime: nowCn(),
     scanInfo: {
-      market: "全市场5000+初筛 + 通过初筛股票全部K线深度分析",
+      market: "全市场5000+初筛 + 前80只K线深度分析 + 自动补足前50",
       candidateCount: candidates.length,
       preFilteredCount: preFiltered.length,
       deepAnalyzeCount: deepList.length,
       strictCount: strictList.length,
       finalCount: output.length,
       rule:
-        "先严格筛选强大机会/大机会/机会候选；如果严格结果太少，自动补充全市场综合排名前80的活跃票，但分层标注，不把普通票伪装成大机会"
-    },
-    data: output
-  };
-}
-  let candidates = [];
-
-  try {
-    candidates = await getMarketCandidates();
-  } catch (e) {
-    candidates = fallbackStocks();
-  }
-
-  if (!candidates || !candidates.length) {
-    candidates = fallbackStocks();
-  }
-
-  const preFiltered = candidates
-    .filter(x => {
-      if (!x.code) return false;
-      if (x.name && (x.name.includes("ST") || x.name.includes("退"))) return false;
-      if (x.price && x.price <= 2) return false;
-      if (x.amount && x.amount < 50000000) return false;
-      if (x.pct < -6) return false;
-      return true;
-    })
-    .sort((a, b) => {
-      const sa =
-        Math.log10(a.amount || 1) * 4 +
-        (a.pct > 0 ? 12 : 0) +
-        (a.pct >= 1.5 && a.pct < 9.8 ? 20 : 0) +
-        (a.turnover >= 2 && a.turnover <= 18 ? 15 : 0) +
-        (a.turnover > 18 && a.turnover <= 28 ? 6 : 0);
-
-      const sb =
-        Math.log10(b.amount || 1) * 4 +
-        (b.pct > 0 ? 12 : 0) +
-        (b.pct >= 1.5 && b.pct < 9.8 ? 20 : 0) +
-        (b.turnover >= 2 && b.turnover <= 18 ? 15 : 0) +
-        (b.turnover > 18 && b.turnover <= 28 ? 6 : 0);
-
-      return sb - sa;
-    });
-
-  const deepList = preFiltered;
-
-  let ranked = await runInBatches(deepList, 6, getStock);
-
-  if (!ranked.length) {
-    ranked = await runInBatches(fallbackStocks(), 6, getStock);
-  }
-
-  ranked.sort((a, b) => {
-    const sa =
-      (a.opportunityScore || 0) -
-      (a.riskScore || 0) * 0.95 +
-      (a.trendScore || 0) * 0.5 +
-      (a.volumeScore || 0) * 0.35 +
-      (a.klineScore || 0) * 0.35 +
-      (a.macdScore || 0) * 0.25;
-
-    const sb =
-      (b.opportunityScore || 0) -
-      (b.riskScore || 0) * 0.95 +
-      (b.trendScore || 0) * 0.5 +
-      (b.volumeScore || 0) * 0.35 +
-      (b.klineScore || 0) * 0.35 +
-      (b.macdScore || 0) * 0.25;
-
-    return sb - sa;
-  });
-
-  const bigChanceList = ranked.filter(x => {
-    const opportunity = x.opportunityScore || 0;
-    const risk = x.riskScore || 0;
-    const trend = x.trendScore || 0;
-    const kline = x.klineScore || 0;
-    const macd = x.macdScore || 0;
-
-    return (
-      opportunity >= 42 &&
-      risk <= 65 &&
-      trend >= 10 &&
-      kline >= 5 &&
-      macd >= -15
-    );
-  });
-
-  const output = bigChanceList.map(x => {
-    const opportunity = x.opportunityScore || 0;
-    const risk = x.riskScore || 0;
-    const amount = x.amount || 0;
-
-    let label = "机会候选";
-
-    if (opportunity >= 75 && risk <= 40) {
-      label = "强大机会";
-    } else if (opportunity >= 60 && risk <= 50) {
-      label = "大机会";
-    }
-
-    let sizeTag = "中小盘";
-
-    if (amount >= 10000000000) {
-      sizeTag = "大盘强势";
-    } else if (amount >= 3000000000) {
-      sizeTag = "中大盘活跃";
-    } else if (amount >= 500000000) {
-      sizeTag = "小盘活跃";
-    } else {
-      sizeTag = "小盘弹性";
-    }
-
-    return {
-      ...x,
-      level: label,
-      levelClass:
-        label === "强大机会"
-          ? "great"
-          : label === "大机会"
-          ? "great"
-          : "chance",
-      sizeTag,
-      positionAdvice:
-        label === "强大机会"
-          ? "30%—50%，分批参与，不建议单票满仓"
-          : label === "大机会"
-          ? "15%—30%，等待回踩承接"
-          : "10%—20%，小仓观察，不追高",
-      actionAdvice:
-        label === "强大机会"
-          ? "趋势、量能、K线共振较强，但仍不能无脑满仓，适合分批参与。"
-          : label === "大机会"
-          ? "达到大机会标准，适合重点观察，回踩承接好再参与。"
-          : "达到机会候选标准，但确认度不如强大机会，适合观察或小仓试错。"
-    };
-  });
-
-  return {
-    success: true,
-    mode: "rank",
-    title: "全市场每日机会榜",
-    updateTime: nowCn(),
-    scanInfo: {
-      market: "全市场5000+初筛 + 通过初筛股票全部K线深度分析",
-      candidateCount: candidates.length,
-      preFilteredCount: preFiltered.length,
-      deepAnalyzeCount: deepList.length,
-      finalCount: output.length,
-      rule:
-        "严格扩容版：大小盘全部覆盖；剔除ST/退市/极低流动性/大跌票；通过初筛后全部计算MA、MACD、支撑压力；显示机会分≥42、风险分≤65、趋势分≥10、K线分≥5、MACD不能明显恶化；分为强大机会/大机会/机会候选"
+        "V10稳定版：先全市场初筛，前80只深度计算MA/MACD/支撑压力；严格结果不足时补足综合排名前50，分层标注，不把普通票伪装成大机会"
     },
     data: output
   };
