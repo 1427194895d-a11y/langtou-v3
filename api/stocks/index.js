@@ -4,21 +4,28 @@ const CACHE = new Map();
 const CACHE_TTL = 30000;
 
 function nowCn() {
-  return new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  return new Date().toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai"
+  });
 }
 
 function cacheGet(key) {
   const item = CACHE.get(key);
   if (!item) return null;
+
   if (Date.now() - item.time > CACHE_TTL) {
     CACHE.delete(key);
     return null;
   }
+
   return item.value;
 }
 
 function cacheSet(key, value) {
-  CACHE.set(key, { time: Date.now(), value });
+  CACHE.set(key, {
+    time: Date.now(),
+    value
+  });
 }
 
 function getText(url, timeout = 9000) {
@@ -37,9 +44,11 @@ function getText(url, timeout = 9000) {
       },
       res => {
         let data = "";
+
         res.on("data", chunk => {
           data += chunk;
         });
+
         res.on("end", () => {
           cacheSet(url, data);
           resolve(data);
@@ -56,7 +65,7 @@ function getText(url, timeout = 9000) {
   });
 }
 
-async function getJson(url, timeout) {
+async function getJson(url, timeout = 9000) {
   const text = await getText(url, timeout);
   return JSON.parse(text);
 }
@@ -80,9 +89,11 @@ function secid(code) {
 
 function marketPrefix(code) {
   code = String(code || "");
+
   if (code.startsWith("6")) return "sh" + code;
   if (code.startsWith("0") || code.startsWith("3")) return "sz" + code;
   if (code.startsWith("8") || code.startsWith("4")) return "bj" + code;
+
   return code;
 }
 
@@ -111,12 +122,16 @@ function fallbackStocks() {
 
 function sma(arr, len) {
   if (!arr || arr.length < len) return null;
+
   const part = arr.slice(arr.length - len);
-  return round(part.reduce((a, b) => a + b, 0) / len);
+  const sum = part.reduce((a, b) => a + b, 0);
+
+  return round(sum / len);
 }
 
 function ema(arr, len) {
   if (!arr || !arr.length) return [];
+
   const k = 2 / (len + 1);
   const out = [];
   let prev = arr[0];
@@ -149,7 +164,7 @@ function calcMacd(closes) {
   const bars = difs.map((v, i) => (v - deas[i]) * 2);
 
   const dif = difs[difs.length - 1];
-  const dea = deas[difs.length - 1];
+  const dea = deas[deas.length - 1];
   const bar = bars[bars.length - 1];
   const prev = bars[bars.length - 2];
 
@@ -177,7 +192,10 @@ async function searchStock(q) {
   const keyword = String(q || "").trim();
 
   if (!keyword) {
-    return { code: "300750", name: "宁德时代" };
+    return {
+      code: "300750",
+      name: "宁德时代"
+    };
   }
 
   if (/^\d{6}$/.test(keyword)) {
@@ -252,7 +270,10 @@ async function getQuote(stock) {
     if (d) {
       return {
         code: stock.code,
-        name: stock.name && stock.name !== stock.code ? stock.name : d.f58 || stock.code,
+        name:
+          stock.name && stock.name !== stock.code
+            ? stock.name
+            : d.f58 || stock.code,
         price: n(d.f43) / 100,
         pct: n(d.f170) / 100,
         open: n(d.f46) / 100,
@@ -268,13 +289,18 @@ async function getQuote(stock) {
   } catch (e) {}
 
   try {
-    const text = await getText("https://qt.gtimg.cn/q=" + marketPrefix(stock.code), 8000);
+    const text = await getText(
+      "https://qt.gtimg.cn/q=" + marketPrefix(stock.code),
+      8000
+    );
+
     const m = String(text || "").match(/="([^"]+)"/);
 
     if (m) {
       const a = m[1].split("~");
       const price = n(a[3]);
       const preClose = n(a[4]);
+
       const pct =
         preClose && price
           ? Number((((price - preClose) / preClose) * 100).toFixed(2))
@@ -300,59 +326,71 @@ async function getQuote(stock) {
   return {
     code: stock.code,
     name: stock.name || stock.code,
-    price: 0,
-    pct: 0,
+    price: n(stock.price),
+    pct: n(stock.pct),
     open: 0,
     high: 0,
     low: 0,
     preClose: 0,
-    amount: 0,
-    turnover: 0,
+    amount: n(stock.amount),
+    turnover: n(stock.turnover),
     pe: 0,
     pb: 0
   };
 }
 
 async function getKline(code, klt, limit) {
-  try {
-    const url =
-      "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=" +
+  const urls = [
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=" +
+      secid(code) +
+      "&ut=fa5fd1943c7b386f172d6893dbfba10b&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=" +
+      klt +
+      "&fqt=1&end=20500101&lmt=" +
+      limit,
+
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=" +
       secid(code) +
       "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=" +
       klt +
       "&fqt=1&end=20500101&lmt=" +
-      limit;
+      limit
+  ];
 
-    const json = await getJson(url, 8000);
+  for (const url of urls) {
+    try {
+      const json = await getJson(url, 10000);
 
-    const rows =
-      json && json.data && json.data.klines
-        ? json.data.klines
-        : [];
+      const rows =
+        json && json.data && json.data.klines ? json.data.klines : [];
 
-    return rows.map(line => {
-      const a = String(line).split(",");
-      return {
-        date: a[0],
-        open: n(a[1]),
-        close: n(a[2]),
-        high: n(a[3]),
-        low: n(a[4]),
-        volume: n(a[5]),
-        amount: n(a[6]),
-        pct: n(a[8]),
-        turnover: n(a[10])
-      };
-    });
-  } catch (e) {
-    return [];
+      if (!rows.length) continue;
+
+      return rows.map(line => {
+        const a = String(line).split(",");
+
+        return {
+          date: a[0],
+          open: n(a[1]),
+          close: n(a[2]),
+          high: n(a[3]),
+          low: n(a[4]),
+          volume: n(a[5]),
+          amount: n(a[6]),
+          pct: n(a[8]),
+          turnover: n(a[10])
+        };
+      });
+    } catch (e) {}
   }
+
+  return [];
 }
 
 function recentHigh(rows, len) {
   if (!rows || rows.length < 2) return null;
 
   const part = rows.slice(Math.max(0, rows.length - len - 1), rows.length - 1);
+
   if (!part.length) return null;
 
   return round(Math.max(...part.map(x => x.high || 0)));
@@ -539,8 +577,12 @@ function analyze(basic, dayK) {
 
     support,
     pressure,
-    strongSupport: supports.length ? round(supports[supports.length - 1]) : support,
-    strongPressure: pressures.length ? round(pressures[pressures.length - 1]) : pressure,
+    strongSupport: supports.length
+      ? round(supports[supports.length - 1])
+      : support,
+    strongPressure: pressures.length
+      ? round(pressures[pressures.length - 1])
+      : pressure,
 
     avgAmount5,
     macd,
@@ -620,7 +662,8 @@ async function getStock(stock) {
     finance: {
       available: false,
       level: "暂不读取",
-      summary: "V8.6稳定版暂时关闭复杂财务接口，优先保证均线、MACD、支撑压力和全市场大机会榜"
+      summary:
+        "V8.8严谨版暂时关闭复杂财务接口，优先保证全市场初筛、均线、MACD、支撑压力和大机会榜"
     },
     kline: {
       day: dayK.slice(-80),
@@ -634,7 +677,7 @@ async function getMarketCandidates() {
   const all = [];
 
   try {
-    const pages = [1, 2, 3, 4, 5, 6, 7, 8];
+    const pages = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
     for (const page of pages) {
       try {
@@ -646,9 +689,7 @@ async function getMarketCandidates() {
         const json = await getJson(url, 8000);
 
         const list =
-          json && json.data && json.data.diff
-            ? json.data.diff
-            : [];
+          json && json.data && json.data.diff ? json.data.diff : [];
 
         for (const x of list) {
           all.push({
@@ -663,33 +704,35 @@ async function getMarketCandidates() {
       } catch (e) {}
     }
 
-    const arr = all
-      .filter(x => {
-        if (!/^\d{6}$/.test(x.code)) return false;
-        if (!x.name) return false;
-        if (x.name.includes("ST")) return false;
-        if (x.name.includes("*ST")) return false;
-        if (x.name.includes("退")) return false;
-        if (x.price <= 2) return false;
-        if (x.amount < 300000000) return false;
-        return true;
-      })
+    const clean = all.filter(x => {
+      if (!/^\d{6}$/.test(x.code)) return false;
+      if (!x.name) return false;
+      if (x.name.includes("ST")) return false;
+      if (x.name.includes("*ST")) return false;
+      if (x.name.includes("退")) return false;
+      if (x.price <= 2) return false;
+      if (x.amount < 300000000) return false;
+      return true;
+    });
+
+    const scored = clean
       .map(x => {
         let fastScore = 0;
 
-        if (x.amount >= 10000000000) fastScore += 35;
+        if (x.amount >= 15000000000) fastScore += 40;
+        else if (x.amount >= 10000000000) fastScore += 35;
         else if (x.amount >= 5000000000) fastScore += 28;
         else if (x.amount >= 3000000000) fastScore += 22;
         else if (x.amount >= 1000000000) fastScore += 15;
 
         if (x.pct >= 3 && x.pct < 9.8) fastScore += 25;
         else if (x.pct > 0 && x.pct < 3) fastScore += 12;
-        else if (x.pct >= 9.8) fastScore += 18;
-        else if (x.pct < 0) fastScore -= 10;
+        else if (x.pct >= 9.8) fastScore += 15;
+        else if (x.pct < 0) fastScore -= 12;
 
-        if (x.turnover >= 3 && x.turnover <= 15) fastScore += 20;
-        else if (x.turnover > 15 && x.turnover <= 25) fastScore += 8;
-        else if (x.turnover > 25) fastScore -= 10;
+        if (x.turnover >= 3 && x.turnover <= 12) fastScore += 20;
+        else if (x.turnover > 12 && x.turnover <= 20) fastScore += 10;
+        else if (x.turnover > 20) fastScore -= 10;
 
         return {
           ...x,
@@ -698,10 +741,27 @@ async function getMarketCandidates() {
       })
       .sort((a, b) => b.fastScore - a.fastScore);
 
-    if (arr.length) return arr;
-  } catch (e) {}
+    return scored.length ? scored : fallbackStocks();
+  } catch (e) {
+    return fallbackStocks();
+  }
+}
 
-  return fallbackStocks();
+async function runInBatches(list, size, worker) {
+  const out = [];
+
+  for (let i = 0; i < list.length; i += size) {
+    const batch = list.slice(i, i + size);
+    const results = await Promise.allSettled(batch.map(worker));
+
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value) {
+        out.push(r.value);
+      }
+    }
+  }
+
+  return out;
 }
 
 async function handleRank() {
@@ -717,41 +777,56 @@ async function handleRank() {
     candidates = fallbackStocks();
   }
 
-  const deepList = candidates.slice(0, 30);
-  const ranked = [];
+  const preFiltered = candidates
+    .filter(x => {
+      if (!x.code) return false;
+      if (x.name && (x.name.includes("ST") || x.name.includes("退"))) {
+        return false;
+      }
+      if (x.price && x.price <= 2) return false;
+      if (x.amount && x.amount < 500000000) return false;
+      if (x.pct < -3) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const sa =
+        Math.log10(a.amount || 1) * 6 +
+        (a.pct > 0 ? 12 : 0) +
+        (a.pct >= 3 && a.pct < 9.8 ? 18 : 0) +
+        (a.turnover >= 3 && a.turnover <= 15 ? 12 : 0);
 
-  for (const stock of deepList) {
-    try {
-      const item = await getStock(stock);
-      if (item) ranked.push(item);
-    } catch (e) {}
-  }
+      const sb =
+        Math.log10(b.amount || 1) * 6 +
+        (b.pct > 0 ? 12 : 0) +
+        (b.pct >= 3 && b.pct < 9.8 ? 18 : 0) +
+        (b.turnover >= 3 && b.turnover <= 15 ? 12 : 0);
+
+      return sb - sa;
+    });
+
+  const deepList = preFiltered.slice(0, 120);
+  let ranked = await runInBatches(deepList, 8, getStock);
 
   if (!ranked.length) {
-    for (const stock of fallbackStocks()) {
-      try {
-        const item = await getStock(stock);
-        if (item) ranked.push(item);
-      } catch (e) {}
-    }
+    ranked = await runInBatches(fallbackStocks(), 6, getStock);
   }
 
   ranked.sort((a, b) => {
     const sa =
       (a.opportunityScore || 0) -
-      (a.riskScore || 0) * 0.8 +
-      (a.trendScore || 0) * 0.35 +
+      (a.riskScore || 0) * 0.9 +
+      (a.trendScore || 0) * 0.45 +
       (a.volumeScore || 0) * 0.35 +
-      (a.klineScore || 0) * 0.25 +
-      (a.macdScore || 0) * 0.2;
+      (a.klineScore || 0) * 0.3 +
+      (a.macdScore || 0) * 0.25;
 
     const sb =
       (b.opportunityScore || 0) -
-      (b.riskScore || 0) * 0.8 +
-      (b.trendScore || 0) * 0.35 +
+      (b.riskScore || 0) * 0.9 +
+      (b.trendScore || 0) * 0.45 +
       (b.volumeScore || 0) * 0.35 +
-      (b.klineScore || 0) * 0.25 +
-      (b.macdScore || 0) * 0.2;
+      (b.klineScore || 0) * 0.3 +
+      (b.macdScore || 0) * 0.25;
 
     return sb - sa;
   });
@@ -762,13 +837,15 @@ async function handleRank() {
     const trend = x.trendScore || 0;
     const volume = x.volumeScore || 0;
     const kline = x.klineScore || 0;
+    const macd = x.macdScore || 0;
 
     return (
-      opportunity >= 70 &&
-      risk <= 40 &&
-      trend >= 30 &&
-      volume >= 15 &&
-      kline >= 10
+      opportunity >= 65 &&
+      risk <= 45 &&
+      trend >= 25 &&
+      volume >= 10 &&
+      kline >= 8 &&
+      macd >= -10
     );
   });
 
@@ -778,7 +855,7 @@ async function handleRank() {
     levelClass: "great",
     positionAdvice: "30%—50%，只适合分批参与；不建议单票满仓",
     actionAdvice:
-      "全市场大机会筛选通过，但仍要分批买入，跌破防守线及时减仓，不能无脑满仓。"
+      "全市场大机会筛选通过，但仍要看回踩承接，跌破防守线必须减仓，不能无脑满仓。"
   }));
 
   return {
@@ -787,11 +864,13 @@ async function handleRank() {
     title: "全市场大机会榜",
     updateTime: nowCn(),
     scanInfo: {
-      market: "全市场扫描：沪深A股 + 创业板 + 科创板",
+      market: "全市场5000+初筛 + 前120只K线深度分析",
       candidateCount: candidates.length,
+      preFilteredCount: preFiltered.length,
       deepAnalyzeCount: deepList.length,
       finalCount: output.length,
-      rule: "只显示大机会：机会分≥70，风险分≤40，趋势分≥30，量能分≥15，K线分≥10"
+      rule:
+        "只显示大机会：机会分≥65，风险分≤45，趋势分≥25，量能分≥10，K线分≥8，MACD不能明显恶化"
     },
     data: output
   };
