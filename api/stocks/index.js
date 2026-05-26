@@ -765,7 +765,7 @@ async function handleRank() {
       return sb - sa;
     });
 
- if (map.size >= 50) break;
+  const deepList = preFiltered.slice(0, 80);
 
   let ranked = await runInBatches(deepList, 6, getStock);
 
@@ -830,7 +830,7 @@ async function handleRank() {
     }
 
     for (const x of extraList) {
-      if (map.size >= 80) break;
+      if (map.size >= 50) break;
       if (!map.has(x.code)) {
         map.set(x.code, x);
       }
