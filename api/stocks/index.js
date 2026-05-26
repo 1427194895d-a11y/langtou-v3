@@ -97,7 +97,15 @@ function fallbackStocks() {
     { code: "002463", name: "沪电股份" },
     { code: "601138", name: "工业富联" },
     { code: "002371", name: "北方华创" },
-    { code: "600584", name: "长电科技" }
+    { code: "600584", name: "长电科技" },
+    { code: "002156", name: "通富微电" },
+    { code: "000977", name: "浪潮信息" },
+    { code: "600309", name: "万华化学" },
+    { code: "002594", name: "比亚迪" },
+    { code: "600519", name: "贵州茅台" },
+    { code: "000858", name: "五粮液" },
+    { code: "601318", name: "中国平安" },
+    { code: "600036", name: "招商银行" }
   ];
 }
 
@@ -141,7 +149,7 @@ function calcMacd(closes) {
   const bars = difs.map((v, i) => (v - deas[i]) * 2);
 
   const dif = difs[difs.length - 1];
-  const dea = deas[deas.length - 1];
+  const dea = deas[difs.length - 1];
   const bar = bars[bars.length - 1];
   const prev = bars[bars.length - 2];
 
@@ -420,6 +428,14 @@ function analyze(basic, dayK) {
     sell.push("跌破20日线，退出观察");
   }
 
+  if (ma30 && price > ma30) {
+    trendScore += 10;
+    pos.push("站上30日线，趋势结构未破坏");
+  } else if (ma30) {
+    riskScore += 10;
+    risk.push("跌破30日线，趋势偏弱");
+  }
+
   if (ma60 && price > ma60) {
     trendScore += 15;
     pos.push("站上60日线，波段结构较强");
@@ -604,7 +620,7 @@ async function getStock(stock) {
     finance: {
       available: false,
       level: "暂不读取",
-      summary: "稳定版暂时关闭复杂财务接口，优先恢复均线、MACD、支撑压力和机会榜"
+      summary: "V8.6稳定版暂时关闭复杂财务接口，优先保证均线、MACD、支撑压力和全市场大机会榜"
     },
     kline: {
       day: dayK.slice(-80),
@@ -615,52 +631,77 @@ async function getStock(stock) {
 }
 
 async function getMarketCandidates() {
+  const all = [];
+
   try {
-    const url =
-      "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=40&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f6,f8";
+    const pages = [1, 2, 3, 4, 5, 6, 7, 8];
 
-    const json = await getJson(url, 8000);
+    for (const page of pages) {
+      try {
+        const url =
+          "https://push2.eastmoney.com/api/qt/clist/get?pn=" +
+          page +
+          "&pz=500&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f6,f8";
 
-    const list =
-      json && json.data && json.data.diff
-        ? json.data.diff
-        : [];
+        const json = await getJson(url, 8000);
 
-    const arr = list
-      .map(x => ({
-        code: String(x.f12 || ""),
-        name: String(x.f14 || ""),
-        price: n(x.f2),
-        pct: n(x.f3),
-        amount: n(x.f6),
-        turnover: n(x.f8)
-      }))
+        const list =
+          json && json.data && json.data.diff
+            ? json.data.diff
+            : [];
+
+        for (const x of list) {
+          all.push({
+            code: String(x.f12 || ""),
+            name: String(x.f14 || ""),
+            price: n(x.f2),
+            pct: n(x.f3),
+            amount: n(x.f6),
+            turnover: n(x.f8)
+          });
+        }
+      } catch (e) {}
+    }
+
+    const arr = all
       .filter(x => {
         if (!/^\d{6}$/.test(x.code)) return false;
         if (!x.name) return false;
         if (x.name.includes("ST")) return false;
+        if (x.name.includes("*ST")) return false;
         if (x.name.includes("退")) return false;
+        if (x.price <= 2) return false;
+        if (x.amount < 300000000) return false;
         return true;
       })
-      .sort((a, b) => {
-        const sa =
-          Math.log10(a.amount || 1) * 5 +
-          (a.pct > 0 ? 10 : 0) +
-          (a.turnover >= 3 ? 8 : 0);
+      .map(x => {
+        let fastScore = 0;
 
-        const sb =
-          Math.log10(b.amount || 1) * 5 +
-          (b.pct > 0 ? 10 : 0) +
-          (b.turnover >= 3 ? 8 : 0);
+        if (x.amount >= 10000000000) fastScore += 35;
+        else if (x.amount >= 5000000000) fastScore += 28;
+        else if (x.amount >= 3000000000) fastScore += 22;
+        else if (x.amount >= 1000000000) fastScore += 15;
 
-        return sb - sa;
+        if (x.pct >= 3 && x.pct < 9.8) fastScore += 25;
+        else if (x.pct > 0 && x.pct < 3) fastScore += 12;
+        else if (x.pct >= 9.8) fastScore += 18;
+        else if (x.pct < 0) fastScore -= 10;
+
+        if (x.turnover >= 3 && x.turnover <= 15) fastScore += 20;
+        else if (x.turnover > 15 && x.turnover <= 25) fastScore += 8;
+        else if (x.turnover > 25) fastScore -= 10;
+
+        return {
+          ...x,
+          fastScore
+        };
       })
-      .slice(0, 6);
+      .sort((a, b) => b.fastScore - a.fastScore);
 
     if (arr.length) return arr;
   } catch (e) {}
 
-  return fallbackStocks().slice(0, 6);
+  return fallbackStocks();
 }
 
 async function handleRank() {
@@ -669,16 +710,17 @@ async function handleRank() {
   try {
     candidates = await getMarketCandidates();
   } catch (e) {
-    candidates = fallbackStocks().slice(0, 6);
+    candidates = fallbackStocks();
   }
 
   if (!candidates || !candidates.length) {
-    candidates = fallbackStocks().slice(0, 6);
+    candidates = fallbackStocks();
   }
 
+  const deepList = candidates.slice(0, 30);
   const ranked = [];
 
-  for (const stock of candidates.slice(0, 6)) {
+  for (const stock of deepList) {
     try {
       const item = await getStock(stock);
       if (item) ranked.push(item);
@@ -686,7 +728,7 @@ async function handleRank() {
   }
 
   if (!ranked.length) {
-    for (const stock of fallbackStocks().slice(0, 6)) {
+    for (const stock of fallbackStocks()) {
       try {
         const item = await getStock(stock);
         if (item) ranked.push(item);
@@ -697,31 +739,61 @@ async function handleRank() {
   ranked.sort((a, b) => {
     const sa =
       (a.opportunityScore || 0) -
-      (a.riskScore || 0) * 0.5 +
-      (a.volumeScore || 0) * 0.3 +
-      (a.klineScore || 0) * 0.2;
+      (a.riskScore || 0) * 0.8 +
+      (a.trendScore || 0) * 0.35 +
+      (a.volumeScore || 0) * 0.35 +
+      (a.klineScore || 0) * 0.25 +
+      (a.macdScore || 0) * 0.2;
 
     const sb =
       (b.opportunityScore || 0) -
-      (b.riskScore || 0) * 0.5 +
-      (b.volumeScore || 0) * 0.3 +
-      (b.klineScore || 0) * 0.2;
+      (b.riskScore || 0) * 0.8 +
+      (b.trendScore || 0) * 0.35 +
+      (b.volumeScore || 0) * 0.35 +
+      (b.klineScore || 0) * 0.25 +
+      (b.macdScore || 0) * 0.2;
 
     return sb - sa;
   });
 
+  const bigChanceList = ranked.filter(x => {
+    const opportunity = x.opportunityScore || 0;
+    const risk = x.riskScore || 0;
+    const trend = x.trendScore || 0;
+    const volume = x.volumeScore || 0;
+    const kline = x.klineScore || 0;
+
+    return (
+      opportunity >= 70 &&
+      risk <= 40 &&
+      trend >= 30 &&
+      volume >= 15 &&
+      kline >= 10
+    );
+  });
+
+  const output = bigChanceList.map(x => ({
+    ...x,
+    level: "大机会",
+    levelClass: "great",
+    positionAdvice: "30%—50%，只适合分批参与；不建议单票满仓",
+    actionAdvice:
+      "全市场大机会筛选通过，但仍要分批买入，跌破防守线及时减仓，不能无脑满仓。"
+  }));
+
   return {
     success: true,
     mode: "rank",
-    title: "全市场每日机会榜",
+    title: "全市场大机会榜",
     updateTime: nowCn(),
     scanInfo: {
-      market: "A股全市场初筛 + 稳定兜底池",
+      market: "全市场扫描：沪深A股 + 创业板 + 科创板",
       candidateCount: candidates.length,
-      deepAnalyzeCount: Math.min(6, candidates.length),
-      finalCount: ranked.length
+      deepAnalyzeCount: deepList.length,
+      finalCount: output.length,
+      rule: "只显示大机会：机会分≥70，风险分≤40，趋势分≥30，量能分≥15，K线分≥10"
     },
-    data: ranked
+    data: output
   };
 }
 
