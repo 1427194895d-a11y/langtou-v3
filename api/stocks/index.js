@@ -3,6 +3,10 @@ const https = require("https");
 const CACHE = new Map();
 const CACHE_TTL = 30000;
 
+function nowCn() {
+  return new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+}
+
 function cacheGet(key) {
   const item = CACHE.get(key);
   if (!item) return null;
@@ -17,7 +21,10 @@ function cacheSet(key, value) {
   CACHE.set(key, { time: Date.now(), value });
 }
 
-function getText(url) {
+function getText(url, timeout = 9000) {
+  const cached = cacheGet(url);
+  if (cached) return Promise.resolve(cached);
+
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
@@ -26,12 +33,17 @@ function getText(url) {
           "User-Agent": "Mozilla/5.0",
           Referer: "https://quote.eastmoney.com/"
         },
-        timeout: 12000
+        timeout
       },
       res => {
         let data = "";
-        res.on("data", chunk => (data += chunk));
-        res.on("end", () => resolve(data));
+        res.on("data", chunk => {
+          data += chunk;
+        });
+        res.on("end", () => {
+          cacheSet(url, data);
+          resolve(data);
+        });
       }
     );
 
@@ -44,362 +56,63 @@ function getText(url) {
   });
 }
 
-async function getJson(url) {
-  const cached = cacheGet(url);
-  if (cached) return cached;
-  const text = await getText(url);
-  const json = JSON.parse(text);
-  cacheSet(url, json);
-  return json;
+async function getJson(url, timeout) {
+  const text = await getText(url, timeout);
+  return JSON.parse(text);
 }
 
-function marketCode(code) {
+function n(v) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
+function round(v) {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return null;
+  return Number(x.toFixed(2));
+}
+
+function secid(code) {
+  code = String(code || "");
+  if (code.startsWith("6")) return "1." + code;
+  return "0." + code;
+}
+
+function marketPrefix(code) {
+  code = String(code || "");
   if (code.startsWith("6")) return "sh" + code;
   if (code.startsWith("0") || code.startsWith("3")) return "sz" + code;
   if (code.startsWith("8") || code.startsWith("4")) return "bj" + code;
   return code;
 }
 
-function eastmoneySecid(code) {
-  if (code.startsWith("6")) return "1." + code;
-  return "0." + code;
-}
-
-function fmtNum(n) {
-  if (n === null || n === undefined || Number.isNaN(Number(n))) return null;
-  return Number(Number(n).toFixed(2));
-}
-
-async function getStockName(code, fallbackName) {
-  if (fallbackName && fallbackName !== code && !fallbackName.includes("�")) {
-    return fallbackName;
-  }
-
-  try {
-    const url =
-      "https://searchapi.eastmoney.com/api/suggest/get?input=" +
-      encodeURIComponent(code) +
-      "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
-
-    const json = await getJson(url);
-    const list =
-      json && json.QuotationCodeTable && json.QuotationCodeTable.Data
-        ? json.QuotationCodeTable.Data
-        : [];
-
-    const item = list.find(x => x.Code === code);
-    if (item && item.Name) return item.Name;
-  } catch (e) {}
-
-  return fallbackName || code;
-}
-
-async function searchStock(q) {
-  const keyword = String(q || "").trim();
-  if (!keyword) return null;
-
-  if (/^\d{6}$/.test(keyword)) {
-    const name = await getStockName(keyword, keyword);
-    return { code: keyword, name };
-  }
-
-  try {
-    const url =
-      "https://searchapi.eastmoney.com/api/suggest/get?input=" +
-      encodeURIComponent(keyword) +
-      "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
-
-    const json = await getJson(url);
-    const list =
-      json && json.QuotationCodeTable && json.QuotationCodeTable.Data
-        ? json.QuotationCodeTable.Data
-        : [];
-
-    const item =
-      list.find(x => x.Code && x.Name && /^\d{6}$/.test(x.Code)) || list[0];
-
-    if (item && item.Code) {
-      return {
-        code: item.Code,
-        name: item.Name || item.Code
-      };
-    }
-  } catch (e) {}
-
-  return null;
-}
-
-function parseQuote(text, stock) {
-  const m = String(text || "").match(/="([^"]+)"/);
-  if (!m) return null;
-
-  const a = m[1].split("~");
-
-  const code = a[2] || stock.code;
-  const price = Number(a[3] || 0);
-  const preClose = Number(a[4] || 0);
-  const open = Number(a[5] || 0);
-  const volumeHand = Number(a[6] || 0);
-  const high = Number(a[33] || 0);
-  const low = Number(a[34] || 0);
-  const amountWan = Number(a[37] || 0);
-  const turnover = Number(a[38] || 0);
-  const pe = Number(a[39] || 0);
-  const pb = Number(a[46] || 0);
-
-  const pct = preClose
-    ? Number((((price - preClose) / preClose) * 100).toFixed(2))
-    : 0;
-
-  return {
-    code,
-    name: stock.name || code,
-    price,
-    pct,
-    open,
-    high,
-    low,
-    preClose,
-    volume: volumeHand * 100,
-    amount: amountWan * 10000,
-    turnover,
-    pe,
-    pb
-  };
-}
-
-async function getKline(code, klt, limit) {
-  try {
-    const url =
-      "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=" +
-      eastmoneySecid(code) +
-      "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=" +
-      klt +
-      "&fqt=1&end=20500101&lmt=" +
-      limit;
-
-    const json = await getJson(url);
-    const rows = json && json.data && json.data.klines ? json.data.klines : [];
-
-    return rows.map(line => {
-      const a = line.split(",");
-      return {
-        date: a[0],
-        open: Number(a[1]),
-        close: Number(a[2]),
-        high: Number(a[3]),
-        low: Number(a[4]),
-        volume: Number(a[5]),
-        amount: Number(a[6]),
-        amplitude: Number(a[7]),
-        pct: Number(a[8]),
-        change: Number(a[9]),
-        turnover: Number(a[10])
-      };
-    });
-  } catch (e) {
-    return [];
-  }
-}
-
-async function getMarketCandidates() {
-  const cacheKey = "rank_candidates_v8_1";
-  const cached = cacheGet(cacheKey);
-  if (cached) return cached;
-
-  const fallback = [
+function fallbackStocks() {
+  return [
     { code: "300750", name: "宁德时代" },
     { code: "688981", name: "中芯国际" },
     { code: "603501", name: "韦尔股份" },
-    { code: "002463", name: "沪电股份" },
     { code: "300308", name: "中际旭创" },
-    { code: "300394", name: "天孚通信" },
     { code: "300502", name: "新易盛" },
-    { code: "002371", name: "北方华创" },
-    { code: "002594", name: "比亚迪" },
+    { code: "300394", name: "天孚通信" },
+    { code: "002463", name: "沪电股份" },
     { code: "601138", name: "工业富联" },
-    { code: "000977", name: "浪潮信息" },
-    { code: "600584", name: "长电科技" },
-    { code: "002156", name: "通富微电" },
-    { code: "600309", name: "万华化学" },
-    { code: "600519", name: "贵州茅台" },
-    { code: "000858", name: "五粮液" },
-    { code: "601318", name: "中国平安" },
-    { code: "600036", name: "招商银行" }
+    { code: "002371", name: "北方华创" },
+    { code: "600584", name: "长电科技" }
   ];
-
-  try {
-    const pages = [1, 2, 3, 4, 5, 6, 7, 8];
-
-    const urls = pages.map(
-      page =>
-        "https://push2.eastmoney.com/api/qt/clist/get?pn=" +
-        page +
-        "&pz=500&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f6,f8"
-    );
-
-    const results = await Promise.allSettled(urls.map(url => getJson(url)));
-    const all = [];
-
-    for (const r of results) {
-      if (r.status !== "fulfilled") continue;
-
-      const list =
-        r.value && r.value.data && r.value.data.diff
-          ? r.value.data.diff
-          : [];
-
-      for (const x of list) {
-        all.push({
-          code: String(x.f12 || ""),
-          name: String(x.f14 || ""),
-          price: Number(x.f2 || 0),
-          pct: Number(x.f3 || 0),
-          amount: Number(x.f6 || 0),
-          turnover: Number(x.f8 || 0)
-        });
-      }
-    }
-
-    const candidates = all
-      .filter(x => {
-        if (!x.code || !/^\d{6}$/.test(x.code)) return false;
-        if (!x.name) return false;
-        if (x.name.includes("ST") || x.name.includes("*ST")) return false;
-        if (x.name.includes("退")) return false;
-
-        if (x.price && x.price <= 2) return false;
-        if (x.amount && x.amount < 50000000) return false;
-        if (x.pct && x.pct < -6) return false;
-
-        return true;
-      })
-      .map(x => {
-        let fastScore = 0;
-
-        if (x.amount > 1000000000) fastScore += 25;
-        else if (x.amount > 500000000) fastScore += 18;
-        else if (x.amount > 200000000) fastScore += 12;
-        else if (x.amount > 0) fastScore += 5;
-
-        if (x.pct > 0 && x.pct < 7) fastScore += 20;
-        else if (x.pct >= 7 && x.pct < 9.8) fastScore += 12;
-        else if (x.pct < 0) fastScore -= 8;
-
-        if (x.turnover >= 3 && x.turnover <= 15) fastScore += 20;
-        else if (x.turnover > 15) fastScore += 5;
-
-        return { ...x, fastScore };
-      })
-      .sort((a, b) => {
-        const scoreA = a.fastScore + Math.log10(a.amount || 1) * 3;
-        const scoreB = b.fastScore + Math.log10(b.amount || 1) * 3;
-        return scoreB - scoreA;
-      })
-      .slice(0, 30);
-
-    if (!candidates.length) {
-      cacheSet(cacheKey, fallback);
-      return fallback;
-    }
-
-    cacheSet(cacheKey, candidates);
-    return candidates;
-  } catch (e) {
-    cacheSet(cacheKey, fallback);
-    return fallback;
-  }
 }
 
-async function getFinance(code) {
-  try {
-    const url =
-      'https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=REPORT_DATE&sortTypes=-1&pageSize=1&pageNumber=1&reportName=RPT_LICO_FN_CPD&columns=ALL&filter=(SECURITY_CODE="' +
-      code +
-      '")';
-
-    const json = await getJson(url);
-    const row =
-      json && json.result && json.result.data && json.result.data.length
-        ? json.result.data[0]
-        : null;
-
-    if (!row) {
-      return {
-        available: false,
-        level: "暂无",
-        summary: "暂无季度业绩数据"
-      };
-    }
-
-    const revenue = Number(row.TOTAL_OPERATE_INCOME || row.OPERATE_INCOME || 0);
-    const netProfit = Number(
-      row.PARENT_NETPROFIT || row.NETPROFIT || row.DEDUCT_PARENT_NETPROFIT || 0
-    );
-    const revenueYoy = Number(
-      row.TOTAL_OPERATE_INCOME_YOY || row.OPERATE_INCOME_YOY || 0
-    );
-    const profitYoy = Number(
-      row.PARENT_NETPROFIT_YOY ||
-        row.NETPROFIT_YOY ||
-        row.DEDUCT_PARENT_NETPROFIT_YOY ||
-        0
-    );
-
-    let level = "中性";
-    let summary = "业绩表现中性，需要结合股价趋势、行业景气和资金面判断。";
-
-    if (profitYoy > 50 && revenueYoy > 20) {
-      level = "高增长";
-      summary = "营收和净利润高速增长，基本面表现强。";
-    } else if (profitYoy > 30 && revenueYoy > 10) {
-      level = "优秀";
-      summary = "营收和净利润同步增长，基本面较强。";
-    } else if (profitYoy > 0 && revenueYoy > 0) {
-      level = "稳健";
-      summary = "营收和净利润保持增长，基本面相对稳健。";
-    } else if (profitYoy < -30 && revenueYoy < 0) {
-      level = "承压";
-      summary = "营收和净利润双降，基本面短期承压。";
-    } else if (profitYoy < -20) {
-      level = "偏弱";
-      summary = "净利润同比下滑明显，需要警惕业绩压力。";
-    }
-
-    return {
-      available: true,
-      reportDate: row.REPORT_DATE || row.REPORTDATE || "-",
-      revenue,
-      netProfit,
-      revenueYoy,
-      profitYoy,
-      eps: row.BASIC_EPS || "-",
-      roe: row.WEIGHTAVG_ROE || row.ROE || "-",
-      grossMargin: row.GROSS_PROFIT_RATIO || "-",
-      netMargin: row.NETPROFIT_RATIO || "-",
-      level,
-      summary
-    };
-  } catch (e) {
-    return {
-      available: false,
-      level: "不可用",
-      summary: "季度业绩接口暂时不可用"
-    };
-  }
+function sma(arr, len) {
+  if (!arr || arr.length < len) return null;
+  const part = arr.slice(arr.length - len);
+  return round(part.reduce((a, b) => a + b, 0) / len);
 }
 
-function sma(arr, n) {
-  if (!arr || arr.length < n) return null;
-  const part = arr.slice(arr.length - n);
-  return Number((part.reduce((a, b) => a + b, 0) / n).toFixed(2));
-}
-
-function ema(arr, n) {
+function ema(arr, len) {
   if (!arr || !arr.length) return [];
-  const k = 2 / (n + 1);
+  const k = 2 / (len + 1);
   const out = [];
   let prev = arr[0];
+
   out.push(prev);
 
   for (let i = 1; i < arr.length; i++) {
@@ -433,18 +146,15 @@ function calcMacd(closes) {
   const prev = bars[bars.length - 2];
 
   let signal = "MACD中性";
+
   if (dif > dea && bar > 0 && bar > prev) {
     signal = "MACD金叉偏强，红柱放大";
-  } else if (dif > dea && bar > 0 && bar < prev) {
-    signal = "MACD多头但红柱缩短，注意动能减弱";
+  } else if (dif > dea && bar > 0) {
+    signal = "MACD多头，但动能需要继续观察";
   } else if (dif < dea && bar < 0 && bar < prev) {
     signal = "MACD死叉偏弱，绿柱放大";
-  } else if (dif < dea && bar < 0) {
-    signal = "MACD空头压制中";
-  } else if (dif > dea) {
-    signal = "MACD多头修复中";
   } else if (dif < dea) {
-    signal = "MACD死叉偏弱";
+    signal = "MACD偏弱";
   }
 
   return {
@@ -455,225 +165,347 @@ function calcMacd(closes) {
   };
 }
 
-function recentHigh(rows, n) {
-  if (!rows || rows.length < 2) return null;
-  const part = rows.slice(Math.max(0, rows.length - n - 1), rows.length - 1);
-  if (!part.length) return null;
-  return Math.max(...part.map(x => x.high || 0));
+async function searchStock(q) {
+  const keyword = String(q || "").trim();
+
+  if (!keyword) {
+    return { code: "300750", name: "宁德时代" };
+  }
+
+  if (/^\d{6}$/.test(keyword)) {
+    return {
+      code: keyword,
+      name: await getStockName(keyword, keyword)
+    };
+  }
+
+  try {
+    const url =
+      "https://searchapi.eastmoney.com/api/suggest/get?input=" +
+      encodeURIComponent(keyword) +
+      "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
+
+    const json = await getJson(url, 8000);
+
+    const list =
+      json && json.QuotationCodeTable && json.QuotationCodeTable.Data
+        ? json.QuotationCodeTable.Data
+        : [];
+
+    const item = list.find(x => x.Code && /^\d{6}$/.test(x.Code));
+
+    if (item) {
+      return {
+        code: item.Code,
+        name: item.Name || item.Code
+      };
+    }
+  } catch (e) {}
+
+  return null;
 }
 
-function recentLow(rows, n) {
-  if (!rows || rows.length < 2) return null;
-  const part = rows.slice(Math.max(0, rows.length - n - 1), rows.length - 1);
-  const lows = part.map(x => x.low || 0).filter(Boolean);
-  if (!lows.length) return null;
-  return Math.min(...lows);
+async function getStockName(code, fallback) {
+  if (fallback && fallback !== code && !String(fallback).includes("�")) {
+    return fallback;
+  }
+
+  try {
+    const url =
+      "https://searchapi.eastmoney.com/api/suggest/get?input=" +
+      encodeURIComponent(code) +
+      "&type=14&token=04840f2bd59f45d2bf7eff7e30d1a2a7";
+
+    const json = await getJson(url, 8000);
+
+    const list =
+      json && json.QuotationCodeTable && json.QuotationCodeTable.Data
+        ? json.QuotationCodeTable.Data
+        : [];
+
+    const item = list.find(x => x.Code === code);
+
+    if (item && item.Name) return item.Name;
+  } catch (e) {}
+
+  return fallback || code;
 }
 
-function calcSupportResistance(price, dayK, ma5, ma10, ma20, ma30, ma60) {
-  const h20 = recentHigh(dayK, 20);
-  const h60 = recentHigh(dayK, 60);
-  const l20 = recentLow(dayK, 20);
-  const l60 = recentLow(dayK, 60);
+async function getQuote(stock) {
+  try {
+    const url =
+      "https://push2.eastmoney.com/api/qt/stock/get?secid=" +
+      secid(stock.code) +
+      "&fields=f43,f44,f45,f46,f48,f57,f58,f60,f162,f167,f168,f170";
 
-  const supports = [ma5, ma10, ma20, ma30, ma60, l20, l60]
-    .filter(x => x && x < price)
-    .sort((a, b) => b - a);
+    const json = await getJson(url, 8000);
+    const d = json && json.data ? json.data : null;
 
-  const pressures = [ma5, ma10, ma20, ma30, ma60, h20, h60]
-    .filter(x => x && x > price)
-    .sort((a, b) => a - b);
+    if (d) {
+      return {
+        code: stock.code,
+        name: stock.name && stock.name !== stock.code ? stock.name : d.f58 || stock.code,
+        price: n(d.f43) / 100,
+        pct: n(d.f170) / 100,
+        open: n(d.f46) / 100,
+        high: n(d.f44) / 100,
+        low: n(d.f45) / 100,
+        preClose: n(d.f60) / 100,
+        amount: n(d.f48),
+        turnover: n(d.f168) / 100,
+        pe: n(d.f162) / 100,
+        pb: n(d.f167) / 100
+      };
+    }
+  } catch (e) {}
 
-  const support = supports.length ? fmtNum(supports[0]) : null;
-  const pressure = pressures.length ? fmtNum(pressures[0]) : null;
+  try {
+    const text = await getText("https://qt.gtimg.cn/q=" + marketPrefix(stock.code), 8000);
+    const m = String(text || "").match(/="([^"]+)"/);
+
+    if (m) {
+      const a = m[1].split("~");
+      const price = n(a[3]);
+      const preClose = n(a[4]);
+      const pct =
+        preClose && price
+          ? Number((((price - preClose) / preClose) * 100).toFixed(2))
+          : n(a[32]);
+
+      return {
+        code: stock.code,
+        name: stock.name || a[1] || stock.code,
+        price,
+        pct,
+        open: n(a[5]),
+        high: n(a[33]),
+        low: n(a[34]),
+        preClose,
+        amount: n(a[37]) * 10000,
+        turnover: n(a[38]),
+        pe: n(a[39]),
+        pb: n(a[46])
+      };
+    }
+  } catch (e) {}
 
   return {
-    support,
-    strongSupport: supports.length > 1 ? fmtNum(supports[supports.length - 1]) : support,
-    pressure,
-    strongPressure: pressures.length > 1 ? fmtNum(pressures[pressures.length - 1]) : pressure,
-    high20: h20 ? fmtNum(h20) : null,
-    high60: h60 ? fmtNum(h60) : null,
-    low20: l20 ? fmtNum(l20) : null,
-    low60: l60 ? fmtNum(l60) : null
+    code: stock.code,
+    name: stock.name || stock.code,
+    price: 0,
+    pct: 0,
+    open: 0,
+    high: 0,
+    low: 0,
+    preClose: 0,
+    amount: 0,
+    turnover: 0,
+    pe: 0,
+    pb: 0
   };
 }
 
-function makeStrategy(basic, dayK, finance) {
-  const closes = dayK.map(x => x.close).filter(x => x > 0);
-  const amounts = dayK.map(x => x.amount).filter(x => x > 0);
+async function getKline(code, klt, limit) {
+  try {
+    const url =
+      "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=" +
+      secid(code) +
+      "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=" +
+      klt +
+      "&fqt=1&end=20500101&lmt=" +
+      limit;
+
+    const json = await getJson(url, 8000);
+
+    const rows =
+      json && json.data && json.data.klines
+        ? json.data.klines
+        : [];
+
+    return rows.map(line => {
+      const a = String(line).split(",");
+      return {
+        date: a[0],
+        open: n(a[1]),
+        close: n(a[2]),
+        high: n(a[3]),
+        low: n(a[4]),
+        volume: n(a[5]),
+        amount: n(a[6]),
+        pct: n(a[8]),
+        turnover: n(a[10])
+      };
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
+function recentHigh(rows, len) {
+  if (!rows || rows.length < 2) return null;
+
+  const part = rows.slice(Math.max(0, rows.length - len - 1), rows.length - 1);
+  if (!part.length) return null;
+
+  return round(Math.max(...part.map(x => x.high || 0)));
+}
+
+function recentLow(rows, len) {
+  if (!rows || rows.length < 2) return null;
+
+  const part = rows.slice(Math.max(0, rows.length - len - 1), rows.length - 1);
+  const lows = part.map(x => x.low || 0).filter(Boolean);
+
+  if (!lows.length) return null;
+
+  return round(Math.min(...lows));
+}
+
+function analyze(basic, dayK) {
+  const closes = dayK.map(x => x.close).filter(Boolean);
+  const amounts = dayK.map(x => x.amount).filter(Boolean);
 
   const price = basic.price;
+
   const ma5 = sma(closes, 5);
   const ma10 = sma(closes, 10);
   const ma20 = sma(closes, 20);
   const ma30 = sma(closes, 30);
   const ma60 = sma(closes, 60);
+
   const avgAmount5 = sma(amounts, 5);
   const macd = calcMacd(closes);
-  const sr = calcSupportResistance(price, dayK, ma5, ma10, ma20, ma30, ma60);
+
+  const high20 = recentHigh(dayK, 20);
+  const high60 = recentHigh(dayK, 60);
+  const low20 = recentLow(dayK, 20);
+  const low60 = recentLow(dayK, 60);
+
+  const supports = [ma5, ma10, ma20, ma30, ma60, low20, low60, basic.low]
+    .filter(x => x && price && x < price)
+    .sort((a, b) => b - a);
+
+  const pressures = [ma5, ma10, ma20, ma30, ma60, high20, high60, basic.high]
+    .filter(x => x && price && x > price)
+    .sort((a, b) => a - b);
+
+  const support = supports.length ? round(supports[0]) : null;
+  const pressure = pressures.length ? round(pressures[0]) : null;
 
   let trendScore = 0;
   let volumeScore = 0;
   let macdScore = 0;
   let klineScore = 0;
-  let financeScore = 0;
   let riskScore = 0;
 
   const pos = [];
-  const risk = [];
   const buy = [];
+  const risk = [];
   const sell = [];
 
   if (ma5 && price > ma5) {
     trendScore += 12;
     pos.push("站上5日线，短线偏强");
   } else if (ma5) {
-    riskScore += 15;
+    riskScore += 10;
     risk.push("跌破5日线，短线转弱");
-    sell.push("跌破5日线，短线需要减仓防守");
   }
 
   if (ma20 && price > ma20) {
     trendScore += 18;
     pos.push("站上20日线，中短趋势较好");
   } else if (ma20) {
-    riskScore += 25;
+    riskScore += 20;
     risk.push("跌破20日线，趋势防守位失守");
     sell.push("跌破20日线，退出观察");
   }
 
-  if (ma30 && price > ma30) {
-    trendScore += 12;
-    pos.push("站上30日线，趋势结构未破坏");
-  } else if (ma30) {
-    riskScore += 14;
-    risk.push("跌破30日线，趋势偏弱");
-  }
-
   if (ma60 && price > ma60) {
     trendScore += 15;
-    pos.push("站上季度线，波段结构较强");
+    pos.push("站上60日线，波段结构较强");
   } else if (ma60) {
-    riskScore += 20;
-    risk.push("跌破季度线，波段偏弱");
-    sell.push("跌破季度线，波段风险加大");
+    riskScore += 15;
+    risk.push("跌破60日线，波段偏弱");
   }
 
   if (ma5 && ma20 && ma30 && ma5 > ma20 && ma20 > ma30) {
     trendScore += 15;
-    pos.push("MA5>MA20>MA30，多头排列");
     buy.push("均线多头排列，趋势结构较好");
   }
 
-  let ma5Distance = null;
-  if (ma5) {
-    ma5Distance = Number((((price - ma5) / ma5) * 100).toFixed(2));
-
-    if (ma5Distance > 10) {
-      riskScore += 25;
-      risk.push("偏离5日线超过10%，短线追高风险较大");
-      sell.push("偏离5日线过大，不适合追高");
-    } else if (ma5Distance > 6) {
-      riskScore += 15;
-      risk.push("偏离5日线较大，追高性价比下降");
-      sell.push("短线偏离较大，适合等回踩");
-    } else if (ma5Distance >= -1 && ma5Distance <= 3 && ma20 && price > ma20) {
-      klineScore += 12;
-      buy.push("靠近5日线且仍在20日线上方，适合观察分歧低吸");
-    }
+  if (basic.amount > 10000000000) {
+    volumeScore += 20;
+    buy.push("成交额超过100亿，资金关注度高");
+  } else if (basic.amount > 3000000000) {
+    volumeScore += 15;
+    buy.push("成交额超过30亿，资金较活跃");
+  } else if (basic.amount > 1000000000) {
+    volumeScore += 10;
+    buy.push("成交额超过10亿，有资金关注");
   }
 
-  let volumeSignal = "量能中性";
-  if (avgAmount5 && basic.amount > avgAmount5 * 1.8 && basic.pct > 0) {
-    volumeScore += 25;
-    volumeSignal = "强放量上涨，资金参与度高";
-    buy.push("强放量上涨，资金关注度明显提升");
-  } else if (avgAmount5 && basic.amount > avgAmount5 * 1.5 && basic.pct > 0) {
-    volumeScore += 18;
-    volumeSignal = "放量上涨，资金活跃";
-    buy.push("放量上涨，短线活跃度提升");
-  } else if (avgAmount5 && basic.amount > avgAmount5 * 1.5 && basic.pct < 0) {
-    volumeScore -= 10;
-    riskScore += 25;
-    volumeSignal = "放量下跌，抛压较重";
-    sell.push("放量下跌，优先控制风险");
+  if (avgAmount5 && basic.amount > avgAmount5 * 1.5 && basic.pct > 0) {
+    volumeScore += 15;
+    buy.push("相对5日均额放量上涨");
   }
 
-  if (macd.signal.includes("金叉")) {
-    macdScore += 20;
-    buy.push(macd.signal);
-  } else if (macd.signal.includes("多头")) {
-    macdScore += 12;
-    buy.push(macd.signal);
-  } else if (macd.signal.includes("死叉")) {
-    macdScore -= 15;
-    riskScore += 18;
-    sell.push(macd.signal);
-  } else if (macd.signal.includes("空头")) {
-    macdScore -= 10;
-    riskScore += 12;
-    sell.push(macd.signal);
-  }
-
-  if (sr.high20 && price > sr.high20 && basic.pct > 0) {
-    klineScore += 20;
-    buy.push("突破20日新高，短线强度提升");
-  } else if (sr.high20 && price >= sr.high20 * 0.97 && basic.pct > 0) {
+  if (basic.turnover >= 3 && basic.turnover <= 15 && basic.pct > 0) {
     klineScore += 12;
-    buy.push("接近20日新高，短线强度较好");
+    buy.push("换手活跃，短线辨识度提升");
+  } else if (basic.turnover > 20) {
+    riskScore += 15;
+    risk.push("换手过高，短线分歧较大");
   }
 
-  if (sr.low20 && price <= sr.low20 * 1.03) {
-    riskScore += 10;
-    risk.push("接近20日低位，趋势仍需修复");
-  }
-
-  if (finance && finance.available) {
-    if (finance.profitYoy > 50 && finance.revenueYoy > 20) {
-      financeScore += 25;
-      buy.push("季度业绩高增长，基本面有较强支撑");
-    } else if (finance.profitYoy > 30 && finance.revenueYoy > 10) {
-      financeScore += 18;
-      buy.push("季度业绩增长较强");
-    } else if (finance.profitYoy > 0 && finance.revenueYoy > 0) {
-      financeScore += 10;
-    } else if (finance.profitYoy < -20) {
-      financeScore -= 15;
-      riskScore += 12;
-      risk.push("季度净利润明显下滑，基本面承压");
-    }
-  }
-
-  if (basic.pct >= 9) {
-    trendScore += 8;
+  if (basic.pct > 0 && basic.pct < 5) {
     klineScore += 10;
-    buy.push("涨停或接近涨停，短线辨识度提升");
-  }
-
-  if (basic.pct <= -5) {
+    buy.push("上涨但未明显过热");
+  } else if (basic.pct >= 5 && basic.pct < 9.8) {
+    klineScore += 15;
+    buy.push("涨幅较强，短线资金进攻明显");
+  } else if (basic.pct >= 9.8) {
+    klineScore += 15;
+    riskScore += 8;
+    buy.push("涨停或接近涨停，短线辨识度高");
+    risk.push("涨幅过大，追高风险增加");
+  } else if (basic.pct <= -5) {
     riskScore += 20;
     sell.push("跌幅较大，短线风险上升");
   }
 
+  if (macd.signal.includes("金叉")) {
+    macdScore += 18;
+    buy.push(macd.signal);
+  } else if (macd.signal.includes("多头")) {
+    macdScore += 10;
+    buy.push(macd.signal);
+  } else if (macd.signal.includes("死叉") || macd.signal.includes("偏弱")) {
+    macdScore -= 10;
+    riskScore += 12;
+    risk.push(macd.signal);
+  }
+
   const opportunityScore = Math.max(
     0,
-    Math.min(100, trendScore + volumeScore + macdScore + klineScore + financeScore)
+    Math.min(100, trendScore + volumeScore + macdScore + klineScore)
   );
 
   riskScore = Math.max(0, Math.min(100, riskScore));
 
-  let level = "没机会";
+  let level = "观察中";
   let levelClass = "neutral";
 
   if (riskScore >= 65) {
     level = "风险大";
     levelClass = "danger";
-  } else if (opportunityScore >= 80 && trendScore >= 60 && riskScore <= 35) {
+  } else if (opportunityScore >= 75 && riskScore <= 40) {
     level = "大机会";
     levelClass = "great";
-  } else if (opportunityScore >= 55 && trendScore >= 40 && riskScore <= 55) {
+  } else if (opportunityScore >= 45 && riskScore <= 55) {
     level = "有机会";
+    levelClass = "chance";
+  } else if (opportunityScore >= 25 && riskScore <= 60) {
+    level = "活跃观察";
     levelClass = "chance";
   }
 
@@ -683,25 +515,25 @@ function makeStrategy(basic, dayK, finance) {
     ma20,
     ma30,
     ma60,
-    ma5Distance,
 
-    support: sr.support,
-    strongSupport: sr.strongSupport,
-    pressure: sr.pressure,
-    strongPressure: sr.strongPressure,
-    high20: sr.high20,
-    high60: sr.high60,
-    low20: sr.low20,
-    low60: sr.low60,
+    high20,
+    high60,
+    low20,
+    low60,
 
-    volumeSignal,
+    support,
+    pressure,
+    strongSupport: supports.length ? round(supports[supports.length - 1]) : support,
+    strongPressure: pressures.length ? round(pressures[pressures.length - 1]) : pressure,
+
+    avgAmount5,
     macd,
 
     trendScore,
     volumeScore,
     macdScore,
     klineScore,
-    financeScore,
+    financeScore: 0,
 
     opportunityScore,
     chanceScore: opportunityScore,
@@ -709,69 +541,187 @@ function makeStrategy(basic, dayK, finance) {
 
     level,
     levelClass,
-
     shortPressure: riskScore >= 60 ? "高" : riskScore >= 35 ? "中" : "低",
 
     positionText: pos.join("；") || "均线位置暂无明显优势",
-    riskText: risk.join("；") || "暂未出现明显破位风险",
+    volumeSignal:
+      volumeScore >= 25
+        ? "量能明显活跃"
+        : volumeScore >= 10
+        ? "量能偏活跃"
+        : "量能中性",
     buyPoint: buy.join("；") || "暂未出现高质量买点",
+    riskText: risk.join("；") || "暂未出现明显破位风险",
     sellPoint: sell.join("；") || "暂未出现强卖出信号",
 
-    stopLoss: ma20 || ma30 || ma5 || sr.support || null,
-    defenseLine: ma5 || ma20 || sr.support || null,
+    stopLoss: ma20 || ma30 || ma5 || support || basic.low || null,
+    defenseLine: ma5 || ma20 || support || basic.low || null,
 
     positionAdvice:
       level === "大机会"
-        ? "40%—70%，只适合分歧低吸或确认后持有"
+        ? "30%—50%，只适合分批参与，不能无脑满仓"
         : level === "有机会"
-        ? "20%—40%，小仓试错"
+        ? "15%—30%，小仓试错"
+        : level === "活跃观察"
+        ? "0%—20%，先观察分歧和回踩"
         : level === "风险大"
         ? "0%—10%，已有仓位优先减仓或止损"
         : "0%—15%，观察为主",
 
     actionAdvice:
-      level === "风险大"
-        ? "风险偏高，不建议新开仓；破位严格减仓。"
-        : level === "大机会"
-        ? "趋势、量能、动能共振较强；无仓不要追高，等分歧低吸。"
+      level === "大机会"
+        ? "趋势和资金较强，但仍要等回踩或确认，不建议追高满仓。"
         : level === "有机会"
-        ? "有一定机会，可小仓试错；跌破5日线先减仓。"
+        ? "有一定机会，可小仓试错，跌破关键均线要控制风险。"
+        : level === "活跃观察"
+        ? "资金活跃但确认度不够，适合加入观察，不适合重仓追高。"
+        : level === "风险大"
+        ? "风险偏高，不建议新开仓。"
         : "暂时观察，等待重新放量或站上关键均线。"
   };
 }
 
 async function getStock(stock) {
-  const realName = await getStockName(stock.code, stock.name);
-  stock.name = realName;
+  const name = await getStockName(stock.code, stock.name);
 
-  const quoteText = await getText(
-    "https://qt.gtimg.cn/q=" + marketCode(stock.code)
-  );
+  const base = {
+    code: stock.code,
+    name
+  };
 
-  const basic = parseQuote(quoteText, stock);
-
-  if (!basic || !basic.price) return null;
-
-  basic.name = realName;
-
-  const [dayK, weekK, monthK, finance] = await Promise.all([
-    getKline(stock.code, 101, 120),
-    getKline(stock.code, 102, 80),
-    getKline(stock.code, 103, 60),
-    getFinance(stock.code)
+  const [basic, dayK] = await Promise.all([
+    getQuote(base),
+    getKline(stock.code, 101, 120)
   ]);
 
-  const strategy = makeStrategy(basic, dayK, finance);
+  basic.name = name;
+
+  const strategy = analyze(basic, dayK);
 
   return {
     ...basic,
     ...strategy,
-    finance,
+    finance: {
+      available: false,
+      level: "暂不读取",
+      summary: "稳定版暂时关闭复杂财务接口，优先恢复均线、MACD、支撑压力和机会榜"
+    },
     kline: {
       day: dayK.slice(-80),
-      week: weekK.slice(-60),
-      month: monthK.slice(-40)
+      week: [],
+      month: []
     }
+  };
+}
+
+async function getMarketCandidates() {
+  try {
+    const url =
+      "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=40&po=1&np=1&fltt=2&invt=2&fid=f6&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f6,f8";
+
+    const json = await getJson(url, 8000);
+
+    const list =
+      json && json.data && json.data.diff
+        ? json.data.diff
+        : [];
+
+    const arr = list
+      .map(x => ({
+        code: String(x.f12 || ""),
+        name: String(x.f14 || ""),
+        price: n(x.f2),
+        pct: n(x.f3),
+        amount: n(x.f6),
+        turnover: n(x.f8)
+      }))
+      .filter(x => {
+        if (!/^\d{6}$/.test(x.code)) return false;
+        if (!x.name) return false;
+        if (x.name.includes("ST")) return false;
+        if (x.name.includes("退")) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const sa =
+          Math.log10(a.amount || 1) * 5 +
+          (a.pct > 0 ? 10 : 0) +
+          (a.turnover >= 3 ? 8 : 0);
+
+        const sb =
+          Math.log10(b.amount || 1) * 5 +
+          (b.pct > 0 ? 10 : 0) +
+          (b.turnover >= 3 ? 8 : 0);
+
+        return sb - sa;
+      })
+      .slice(0, 6);
+
+    if (arr.length) return arr;
+  } catch (e) {}
+
+  return fallbackStocks().slice(0, 6);
+}
+
+async function handleRank() {
+  let candidates = [];
+
+  try {
+    candidates = await getMarketCandidates();
+  } catch (e) {
+    candidates = fallbackStocks().slice(0, 6);
+  }
+
+  if (!candidates || !candidates.length) {
+    candidates = fallbackStocks().slice(0, 6);
+  }
+
+  const ranked = [];
+
+  for (const stock of candidates.slice(0, 6)) {
+    try {
+      const item = await getStock(stock);
+      if (item) ranked.push(item);
+    } catch (e) {}
+  }
+
+  if (!ranked.length) {
+    for (const stock of fallbackStocks().slice(0, 6)) {
+      try {
+        const item = await getStock(stock);
+        if (item) ranked.push(item);
+      } catch (e) {}
+    }
+  }
+
+  ranked.sort((a, b) => {
+    const sa =
+      (a.opportunityScore || 0) -
+      (a.riskScore || 0) * 0.5 +
+      (a.volumeScore || 0) * 0.3 +
+      (a.klineScore || 0) * 0.2;
+
+    const sb =
+      (b.opportunityScore || 0) -
+      (b.riskScore || 0) * 0.5 +
+      (b.volumeScore || 0) * 0.3 +
+      (b.klineScore || 0) * 0.2;
+
+    return sb - sa;
+  });
+
+  return {
+    success: true,
+    mode: "rank",
+    title: "全市场每日机会榜",
+    updateTime: nowCn(),
+    scanInfo: {
+      market: "A股全市场初筛 + 稳定兜底池",
+      candidateCount: candidates.length,
+      deepAnalyzeCount: Math.min(6, candidates.length),
+      finalCount: ranked.length
+    },
+    data: ranked
   };
 }
 
@@ -779,99 +729,39 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Content-Type", "application/json; charset=utf-8");
 
-  const q = String(req.query.q || "").trim();
-  const rank = String(req.query.rank || "").trim();
-
   try {
+    const q = String((req.query && req.query.q) || "").trim();
+    const rank = String((req.query && req.query.rank) || "").trim();
+
     if (rank === "1") {
-      const candidates = await getMarketCandidates();
-      const deepList = candidates.slice(0, 18);
+      const result = await handleRank();
+      return res.status(200).json(result);
+    }
 
-      const result = await Promise.allSettled(
-        deepList.map(stock => getStock(stock))
-      );
+    const found = await searchStock(q || "300750");
 
-      const ranked = result
-        .filter(x => x.status === "fulfilled" && x.value)
-        .map(x => x.value);
-
-      ranked.sort((a, b) => {
-        const scoreA =
-          (a.opportunityScore || 0) -
-          (a.riskScore || 0) * 0.65 +
-          (a.volumeScore || 0) * 0.2 +
-          (a.klineScore || 0) * 0.2;
-
-        const scoreB =
-          (b.opportunityScore || 0) -
-          (b.riskScore || 0) * 0.65 +
-          (b.volumeScore || 0) * 0.2 +
-          (b.klineScore || 0) * 0.2;
-
-        return scoreB - scoreA;
-      });
-
+    if (!found || !found.code) {
       return res.status(200).json({
         success: true,
-        mode: "rank",
-        title: "全市场每日机会榜",
-        updateTime: new Date().toLocaleString("zh-CN", {
-          timeZone: "Asia/Shanghai"
-        }),
-        scanInfo: {
-          market: "A股全市场初筛",
-          candidateCount: candidates.length,
-          deepAnalyzeCount: deepList.length,
-          finalCount: Math.min(10, ranked.length)
-        },
-        data: ranked.slice(0, 10)
+        updateTime: nowCn(),
+        data: []
       });
     }
 
-    let targets = [];
-
-    if (q) {
-      const found = await searchStock(q);
-
-      if (!found || !found.code) {
-        return res.status(200).json({
-          success: true,
-          updateTime: new Date().toLocaleString("zh-CN", {
-            timeZone: "Asia/Shanghai"
-          }),
-          data: []
-        });
-      }
-
-      targets = [found];
-    } else {
-      targets = [
-        {
-          code: "300750",
-          name: "宁德时代"
-        }
-      ];
-    }
-
-    const data = [];
-
-    for (const stock of targets) {
-      const item = await getStock(stock);
-      if (item) data.push(item);
-    }
+    const item = await getStock(found);
 
     return res.status(200).json({
       success: true,
-      updateTime: new Date().toLocaleString("zh-CN", {
-        timeZone: "Asia/Shanghai"
-      }),
-      data
+      updateTime: nowCn(),
+      data: item ? [item] : []
     });
   } catch (e) {
-    return res.status(500).json({
+    return res.status(200).json({
       success: false,
-      message: "行情源暂时不可用",
-      error: String(e)
+      updateTime: nowCn(),
+      message: "后端异常",
+      error: String(e),
+      data: []
     });
   }
 };
