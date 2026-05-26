@@ -743,6 +743,193 @@ async function handleRank() {
       if (!x.code) return false;
       if (x.name && (x.name.includes("ST") || x.name.includes("退"))) return false;
       if (x.price && x.price <= 2) return false;
+      if (x.amount && x.amount < 30000000) return false;
+      if (x.pct < -7) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const sa =
+        Math.log10(a.amount || 1) * 4 +
+        (a.pct > 0 ? 12 : 0) +
+        (a.pct >= 1 && a.pct < 9.8 ? 20 : 0) +
+        (a.turnover >= 1.5 && a.turnover <= 25 ? 15 : 0) +
+        (a.turnover > 25 && a.turnover <= 35 ? 5 : 0);
+
+      const sb =
+        Math.log10(b.amount || 1) * 4 +
+        (b.pct > 0 ? 12 : 0) +
+        (b.pct >= 1 && b.pct < 9.8 ? 20 : 0) +
+        (b.turnover >= 1.5 && b.turnover <= 25 ? 15 : 0) +
+        (b.turnover > 25 && b.turnover <= 35 ? 5 : 0);
+
+      return sb - sa;
+    });
+
+  const deepList = preFiltered;
+
+  let ranked = await runInBatches(deepList, 6, getStock);
+
+  if (!ranked.length) {
+    ranked = await runInBatches(fallbackStocks(), 6, getStock);
+  }
+
+  ranked = ranked
+    .map(x => {
+      const totalRankScore =
+        (x.opportunityScore || 0) -
+        (x.riskScore || 0) * 0.85 +
+        (x.trendScore || 0) * 0.55 +
+        (x.volumeScore || 0) * 0.4 +
+        (x.klineScore || 0) * 0.35 +
+        (x.macdScore || 0) * 0.25;
+
+      return {
+        ...x,
+        totalRankScore: Number(totalRankScore.toFixed(2))
+      };
+    })
+    .sort((a, b) => b.totalRankScore - a.totalRankScore);
+
+  const strictList = ranked.filter(x => {
+    const opportunity = x.opportunityScore || 0;
+    const risk = x.riskScore || 0;
+    const trend = x.trendScore || 0;
+    const kline = x.klineScore || 0;
+    const macd = x.macdScore || 0;
+
+    return (
+      opportunity >= 42 &&
+      risk <= 65 &&
+      trend >= 8 &&
+      kline >= 4 &&
+      macd >= -18
+    );
+  });
+
+  let finalList = strictList;
+
+  // 关键：如果严格机会太少，不再只显示6支，自动补充综合排名靠前的票
+  if (finalList.length < 80) {
+    const extraList = ranked.filter(x => {
+      const risk = x.riskScore || 0;
+      const opportunity = x.opportunityScore || 0;
+      const trend = x.trendScore || 0;
+      const amount = x.amount || 0;
+
+      if (risk > 75) return false;
+      if (opportunity < 25 && trend < 5) return false;
+      if (amount < 30000000) return false;
+
+      return true;
+    });
+
+    const map = new Map();
+
+    for (const x of finalList) {
+      map.set(x.code, x);
+    }
+
+    for (const x of extraList) {
+      if (map.size >= 80) break;
+      if (!map.has(x.code)) {
+        map.set(x.code, x);
+      }
+    }
+
+    finalList = Array.from(map.values());
+  }
+
+  const output = finalList.map(x => {
+    const opportunity = x.opportunityScore || 0;
+    const risk = x.riskScore || 0;
+    const amount = x.amount || 0;
+
+    let label = "活跃观察";
+
+    if (opportunity >= 75 && risk <= 40) {
+      label = "强大机会";
+    } else if (opportunity >= 60 && risk <= 50) {
+      label = "大机会";
+    } else if (opportunity >= 42 && risk <= 65) {
+      label = "机会候选";
+    }
+
+    let sizeTag = "中小盘";
+
+    if (amount >= 10000000000) {
+      sizeTag = "大盘强势";
+    } else if (amount >= 3000000000) {
+      sizeTag = "中大盘活跃";
+    } else if (amount >= 500000000) {
+      sizeTag = "小盘活跃";
+    } else {
+      sizeTag = "小盘弹性";
+    }
+
+    return {
+      ...x,
+      level: label,
+      levelClass:
+        label === "强大机会"
+          ? "great"
+          : label === "大机会"
+          ? "great"
+          : "chance",
+      sizeTag,
+      positionAdvice:
+        label === "强大机会"
+          ? "30%—50%，分批参与，不建议单票满仓"
+          : label === "大机会"
+          ? "15%—30%，等待回踩承接"
+          : label === "机会候选"
+          ? "10%—20%，小仓观察，不追高"
+          : "0%—10%，只观察，不建议追高",
+      actionAdvice:
+        label === "强大机会"
+          ? "趋势、量能、K线共振较强，但仍不能无脑满仓，适合分批参与。"
+          : label === "大机会"
+          ? "达到大机会标准，适合重点观察，回踩承接好再参与。"
+          : label === "机会候选"
+          ? "达到机会候选标准，但确认度不如强大机会，适合观察或小仓试错。"
+          : "属于全市场综合排名靠前的活跃票，但确认度一般，先观察。"
+    };
+  });
+
+  return {
+    success: true,
+    mode: "rank",
+    title: "全市场每日机会榜",
+    updateTime: nowCn(),
+    scanInfo: {
+      market: "全市场5000+初筛 + 通过初筛股票全部K线深度分析",
+      candidateCount: candidates.length,
+      preFilteredCount: preFiltered.length,
+      deepAnalyzeCount: deepList.length,
+      strictCount: strictList.length,
+      finalCount: output.length,
+      rule:
+        "先严格筛选强大机会/大机会/机会候选；如果严格结果太少，自动补充全市场综合排名前80的活跃票，但分层标注，不把普通票伪装成大机会"
+    },
+    data: output
+  };
+}
+  let candidates = [];
+
+  try {
+    candidates = await getMarketCandidates();
+  } catch (e) {
+    candidates = fallbackStocks();
+  }
+
+  if (!candidates || !candidates.length) {
+    candidates = fallbackStocks();
+  }
+
+  const preFiltered = candidates
+    .filter(x => {
+      if (!x.code) return false;
+      if (x.name && (x.name.includes("ST") || x.name.includes("退"))) return false;
+      if (x.price && x.price <= 2) return false;
       if (x.amount && x.amount < 50000000) return false;
       if (x.pct < -6) return false;
       return true;
