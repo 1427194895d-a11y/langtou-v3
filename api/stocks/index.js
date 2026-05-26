@@ -765,7 +765,7 @@ async function handleRank() {
       return sb - sa;
     });
 
-  const deepList = preFiltered;
+ if (map.size >= 50) break;
 
   let ranked = await runInBatches(deepList, 6, getStock);
 
